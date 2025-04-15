@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::reading::Reading;
 
+/// Communication with a Uni-T UT325F over a serial port.
 pub struct Meter {
     _sync_timeout: Duration,
     port: String,
