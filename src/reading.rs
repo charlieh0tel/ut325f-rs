@@ -86,30 +86,30 @@ impl Reading {
         if buf.len() != Self::N_BYTES {
             return Err(anyhow!("Incorrect buffer size"));
         }
-        if &buf[..Self::N_SYNC_BYTES] != Self::SYNC {
+        if buf[..Self::N_SYNC_BYTES] != Self::SYNC {
             return Err(anyhow!("Bad sync header"));
         }
 
         let mut offset = Self::N_SYNC_BYTES;
         let timestamp = std::time::Instant::now();
         let mut current_temps_c = [0.0; 4];
-        for i in 0..4 {
-            current_temps_c[i] = Self::unpack_f32(buf, &mut offset)?;
+        for temp in current_temps_c.iter_mut() {
+            *temp = Self::unpack_f32(buf, &mut offset)?;
         }
-        for i in 0..4 {
+        for temp in current_temps_c.iter_mut() {
             let error = Self::unpack_u8(buf, &mut offset)?;
             if error != 0 {
-                current_temps_c[i] = f32::NAN;
+                *temp = f32::NAN;
             }
         }
         let mut held_temps_c = [0.0; 4];
-        for i in 0..4 {
-            held_temps_c[i] = Self::unpack_f32(buf, &mut offset)?;
+        for temp in held_temps_c.iter_mut() {
+            *temp = Self::unpack_f32(buf, &mut offset)?;
         }
-        for i in 0..4 {
+        for temp in held_temps_c.iter_mut() {
             let error = Self::unpack_u8(buf, &mut offset)?;
             if error != 0 {
-                held_temps_c[i] = f32::NAN;
+                *temp = f32::NAN;
             }
         }
         let meter_temp_c = Self::unpack_f32(buf, &mut offset)?;
