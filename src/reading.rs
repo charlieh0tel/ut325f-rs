@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
 use std::mem;
-use std::time::Instant;
+use std::time::SystemTime;
+
+use crate::utils::system_time_to_unix_seconds;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -27,7 +29,7 @@ impl TryFrom<u8> for HoldType {
 
 #[derive(Debug)]
 pub struct Reading {
-    pub timestamp: Instant,
+    pub timestamp: SystemTime,
     pub current_temps_c: [f32; 4],
     pub held_temps_c: [f32; 4],
     pub hold_type: HoldType,
@@ -91,7 +93,7 @@ impl Reading {
         }
 
         let mut offset = Self::N_SYNC_BYTES;
-        let timestamp = std::time::Instant::now();
+        let timestamp = SystemTime::now();
         let mut current_temps_c = [0.0; 4];
         for temp in current_temps_c.iter_mut() {
             *temp = Self::unpack_f32(buf, &mut offset)?;
@@ -133,20 +135,25 @@ impl Reading {
     }
 
     pub fn print_current_temps(&self) {
-        for (i, temp) in self.current_temps_c.iter().enumerate() {
-            print!("{:7.3}", temp);
-            if i < self.current_temps_c.len() - 1 {
-                print!(" ");
-            }
+        print!(
+            "{:.3}",
+            system_time_to_unix_seconds(self.timestamp).unwrap()
+        );
+        for temp in self.current_temps_c.iter() {
+            print!(" {:7.3}", temp);
         }
         println!();
     }
 
     pub fn print_all(&self) {
+        print!(
+            "{:.3}",
+            system_time_to_unix_seconds(self.timestamp).unwrap()
+        );
         for temp in &self.current_temps_c {
-            print!("{:7.3} ", temp);
+            print!(" {:7.3}", temp);
         }
-        print!("{:?}", self.hold_type);
+        print!(" {:?}", self.hold_type);
         for temp in &self.held_temps_c {
             print!(" {:7.3}", temp);
         }
