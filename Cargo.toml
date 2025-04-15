@@ -1,0 +1,10 @@
+[package]
+name = "ut325f-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+clap = "4.5.36"
+clap_derive = "4.5.32"
+serialport = "4.7.1"
