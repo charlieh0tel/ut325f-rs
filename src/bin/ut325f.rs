@@ -15,14 +15,15 @@ struct Args {
     held_temps: bool,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args = Args::parse();
-    let mut ut = Meter::new(args.port);
+    let mut meter = Meter::new(args.port);
 
-    ut.open()?;
+    meter.open().await?;
 
     loop {
-        match ut.read() {
+        match meter.read().await {
             Ok(reading) => {
                 if args.held_temps {
                     reading.print_all_temps();

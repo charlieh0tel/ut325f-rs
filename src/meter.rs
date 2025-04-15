@@ -1,14 +1,14 @@
-use anyhow::{anyhow, Result};
-use serialport::SerialPort;
-use std::time::{Duration, Instant};
+use anyhow::{Result, anyhow};
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
 use crate::reading::Reading;
 
-/// Communication with a Uni-T UT325F over a serial port.
 pub struct Meter {
     _sync_timeout: Duration,
     port: String,
-    serial: Option<Box<dyn SerialPort>>,
+    serial: Option<SerialStream>,
 }
 
 impl Meter {
@@ -20,76 +20,86 @@ impl Meter {
         }
     }
 
-    pub fn open(&mut self) -> Result<()> {
-        let builder = serialport::new(&self.port, 115200)
-            .data_bits(serialport::DataBits::Eight)
-            .parity(serialport::Parity::None)
-            .stop_bits(serialport::StopBits::One)
-            .flow_control(serialport::FlowControl::None)
+    pub async fn open(&mut self) -> Result<()> {
+        let builder = tokio_serial::new(&self.port, 115200)
+            .data_bits(tokio_serial::DataBits::Eight)
+            .parity(tokio_serial::Parity::None)
+            .stop_bits(tokio_serial::StopBits::One)
+            .flow_control(tokio_serial::FlowControl::None)
             .timeout(Duration::from_secs(1));
 
-        match builder.open() {
+        match builder.open_native_async() {
             Ok(port) => {
                 self.serial = Some(port);
-                // We get garbage sometimes before we're fully synchronized.
-                for _ in 0..5 {
-                    match self.read() {
-                        Ok(_) => (),  // Discard
-                        Err(_) => (), // Never mind, it will get sorted.
-                    }
-                }
+                self.clear_buffer().await?;
                 Ok(())
             }
             Err(e) => Err(anyhow!("Failed to open serial port '{}': {}", self.port, e)),
         }
     }
 
-    pub fn read(&mut self) -> Result<Reading> {
+    async fn clear_buffer(&mut self) -> Result<()> {
+        for _ in 0..10 {
+            // Increased dummy reads
+            match self.read().await {
+                Ok(_) => (),
+                Err(ref e) if e.to_string().contains("TimedOut") => {
+                    // Ignore timeouts during clearing
+                }
+                Err(e) => eprintln!("Warning: Initial read error: {}", e),
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok(())
+    }
+
+    pub async fn read(&mut self) -> Result<Reading> {
         let serial = self
             .serial
             .as_mut()
             .ok_or_else(|| anyhow!("Serial port is not open"))?;
-        let start = Instant::now();
+        let mut sync_buf = vec![0u8; Reading::N_SYNC_BYTES];
+        let mut rest_buf = vec![0u8; Reading::N_BYTES - Reading::N_SYNC_BYTES];
 
-        while start.elapsed() < self._sync_timeout {
-            let mut sync_buf = vec![0u8; Reading::N_SYNC_BYTES];
-            match serial.read_exact(&mut sync_buf) {
-                Ok(_) => {
-                    if sync_buf == Reading::SYNC {
-                        let mut rest_buf = vec![0u8; Reading::N_BYTES - Reading::N_SYNC_BYTES];
-                        serial.read_exact(&mut rest_buf)?;
-                        let mut combined = sync_buf;
-                        combined.extend_from_slice(&rest_buf);
-                        let reading_array: [u8; Reading::N_BYTES] =
-                            combined.try_into().map_err(|v: Vec<u8>| {
-                                anyhow!(
-                                    "Error converting Vec<u8> to [u8; {}]: {:?}",
-                                    Reading::N_BYTES,
-                                    v
-                                )
-                            })?;
-                        return Reading::parse(&reading_array);
-                    }
+        loop {
+            tokio::select! {
+                result = serial.read_exact(&mut sync_buf) => {
+                    result.map_err(|e| anyhow!("Error reading sync header: {}", e))?;
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                    // Continue reading if it's just a timeout
+                _ = tokio::time::sleep(self._sync_timeout) => {
+                    return Err(anyhow!("Timeout reading sync header"));
                 }
-                Err(e) => return Err(anyhow!("Error reading from serial port: {}", e)),
+            }
+
+            if sync_buf == Reading::SYNC {
+                break;
             }
         }
-        Err(anyhow!("Failed to sync within timeout."))
-    }
 
-    pub fn close(&mut self) {
-        if let Some(serial) = self.serial.take() {
-            // The serial port will be closed when the Box is dropped
-            drop(serial);
+        tokio::select! {
+            result = serial.read_exact(&mut rest_buf) => {
+                result.map_err(|e| anyhow!("Error reading data: {}", e))?;
+            }
+            _ = tokio::time::sleep(self._sync_timeout) => {
+                return Err(anyhow!("Timeout reading data"));
+            }
         }
-    }
-}
 
-impl Drop for Meter {
-    fn drop(&mut self) {
-        self.close();
+        let mut combined = sync_buf;
+        combined.extend_from_slice(&rest_buf);
+        let reading_array: [u8; Reading::N_BYTES] = combined.try_into().map_err(|v: Vec<u8>| {
+            anyhow!(
+                "Error converting Vec<u8> to [u8; {}]: {:?}",
+                Reading::N_BYTES,
+                v
+            )
+        })?;
+
+        Reading::parse(&reading_array)
+    }
+
+    pub async fn close(&mut self) -> Result<()> {
+        self.serial.take();
+        Ok(())
     }
 }

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn system_time_to_unix_seconds(time: SystemTime) -> Result<f64> {
