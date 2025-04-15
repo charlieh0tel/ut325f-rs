@@ -9,6 +9,10 @@ use ut325f_rs::Meter;
 struct Args {
     /// The serial port to use
     port: String,
+
+    /// Print the held temperatures as well.
+    #[clap(short = 'H', long, action)]
+    held_temps: bool,
 }
 
 fn main() -> Result<()> {
@@ -19,7 +23,13 @@ fn main() -> Result<()> {
 
     loop {
         match ut.read() {
-            Ok(reading) => reading.print_current_temps(),
+            Ok(reading) => {
+                if args.held_temps {
+                    reading.print_all_temps();
+                } else {
+                    reading.print_current_temps();
+                }
+            }
             Err(e) => eprintln!("Error reading data: {}", e),
         }
     }

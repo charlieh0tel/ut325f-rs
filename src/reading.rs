@@ -145,7 +145,7 @@ impl Reading {
         println!();
     }
 
-    pub fn print_all(&self) {
+    pub fn print_all_temps(&self) {
         print!(
             "{:.3}",
             system_time_to_unix_seconds(self.timestamp).unwrap()
