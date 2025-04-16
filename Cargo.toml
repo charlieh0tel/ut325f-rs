@@ -6,7 +6,7 @@ description = "USB relay support"
 edition = "2024"
 license-file = "LICENSE"
 repository = "https://github.com/charlieh0tel/ut325f-rs"
-keywords = ["usb", "thermocouple", "test&measurement"]
+keywords = ["usb", "thermocouple", "measurement"]
 categories = ["command-line-utilities"]
 
 [dependencies]
