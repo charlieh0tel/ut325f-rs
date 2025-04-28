@@ -1,6 +1,6 @@
 [package]
 name = "ut325f-rs"
-version = "0.9.0"
+version = "0.9.1"
 authors = ["Christopher Hoover <ch@murgatroid.com>"]
 description = "USB relay support"
 edition = "2024"
