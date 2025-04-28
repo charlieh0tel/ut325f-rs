@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use anyhow::Result;
 use clap::Parser;
 use clap_derive::Parser;
@@ -31,7 +32,7 @@ async fn main() -> Result<()> {
                     reading.print_current_temps();
                 }
             }
-            Err(e) => eprintln!("Error reading data: {}", e),
+            Err(e) => return Err(anyhow!("Error reading data: {}", e))
         }
     }
 }

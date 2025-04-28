@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use tokio::time;
 
 use crate::reading::Reading;
 
@@ -39,8 +40,7 @@ impl Meter {
     }
 
     async fn clear_buffer(&mut self) -> Result<()> {
-        for _ in 0..10 {
-            // Increased dummy reads
+        for _ in 0..3 {
             match self.read().await {
                 Ok(_) => (),
                 Err(ref e) if e.to_string().contains("TimedOut") => {
@@ -54,7 +54,7 @@ impl Meter {
     }
 
     pub async fn read(&mut self) -> Result<Reading> {
-        let serial = self
+        let mut serial = self
             .serial
             .as_mut()
             .ok_or_else(|| anyhow!("Serial port is not open"))?;
@@ -62,28 +62,14 @@ impl Meter {
         let mut rest_buf = vec![0u8; Reading::N_BYTES - Reading::N_SYNC_BYTES];
 
         loop {
-            tokio::select! {
-                result = serial.read_exact(&mut sync_buf) => {
-                    result.map_err(|e| anyhow!("Error reading sync header: {}", e))?;
-                }
-                _ = tokio::time::sleep(self._sync_timeout) => {
-                    return Err(anyhow!("Timeout reading sync header"));
-                }
-            }
-
+            read_with_timeout(&mut serial, &mut sync_buf,
+                              self._sync_timeout).await?;
             if sync_buf == Reading::SYNC {
                 break;
             }
         }
-
-        tokio::select! {
-            result = serial.read_exact(&mut rest_buf) => {
-                result.map_err(|e| anyhow!("Error reading data: {}", e))?;
-            }
-            _ = tokio::time::sleep(self._sync_timeout) => {
-                return Err(anyhow!("Timeout reading data"));
-            }
-        }
+        read_with_timeout(&mut serial, &mut rest_buf,
+                          self._sync_timeout).await?;
 
         let mut combined = sync_buf;
         combined.extend_from_slice(&rest_buf);
@@ -101,5 +87,21 @@ impl Meter {
     pub async fn close(&mut self) -> Result<()> {
         self.serial.take();
         Ok(())
+    }
+}
+
+
+async fn read_with_timeout<R>(
+    mut reader: R,
+    buf: &mut [u8],
+    timeout: Duration,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    match time::timeout(timeout, reader.read_exact(buf)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(anyhow!("Error reading data: {}", e)),
+        Err(_) => Err(anyhow!("Timeout reading data")),
     }
 }
