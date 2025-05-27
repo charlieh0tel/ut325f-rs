@@ -2,7 +2,7 @@
 name = "ut325f-rs"
 version = "0.9.1"
 authors = ["Christopher Hoover <ch@murgatroid.com>"]
-description = "USB relay support"
+description = "Support for Uni-T UT325-F thermocouple meter"
 edition = "2024"
 license = "BSD-3-Clause"
 repository = "https://github.com/charlieh0tel/ut325f-rs"

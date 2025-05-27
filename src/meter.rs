@@ -1,8 +1,9 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+use anyhow::anyhow;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
 use tokio::time;
+use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
 use crate::reading::Reading;
 
@@ -62,14 +63,12 @@ impl Meter {
         let mut rest_buf = vec![0u8; Reading::N_BYTES - Reading::N_SYNC_BYTES];
 
         loop {
-            read_with_timeout(&mut serial, &mut sync_buf,
-                              self._sync_timeout).await?;
+            read_with_timeout(&mut serial, &mut sync_buf, self._sync_timeout).await?;
             if sync_buf == Reading::SYNC {
                 break;
             }
         }
-        read_with_timeout(&mut serial, &mut rest_buf,
-                          self._sync_timeout).await?;
+        read_with_timeout(&mut serial, &mut rest_buf, self._sync_timeout).await?;
 
         let mut combined = sync_buf;
         combined.extend_from_slice(&rest_buf);
@@ -90,12 +89,7 @@ impl Meter {
     }
 }
 
-
-async fn read_with_timeout<R>(
-    mut reader: R,
-    buf: &mut [u8],
-    timeout: Duration,
-) -> Result<()>
+async fn read_with_timeout<R>(mut reader: R, buf: &mut [u8], timeout: Duration) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
 {

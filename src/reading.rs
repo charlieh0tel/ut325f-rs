@@ -1,4 +1,5 @@
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
+use anyhow::Result;
 use std::mem;
 use std::time::SystemTime;
 
@@ -28,7 +29,7 @@ impl TryFrom<u8> for HoldType {
 }
 
 /// A reading from the Uni-T UT325F meter.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct Reading {
     pub timestamp: SystemTime,
     pub current_temps_c: [f32; 4],
