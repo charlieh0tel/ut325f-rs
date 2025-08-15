@@ -1,14 +1,14 @@
-name: Build
+name: Build and Release
 
 on:
-  push
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
 
 jobs:
   build:
-    env:
-      tag-name: ${{ inputs.tag-name }}
-      ref-tag-prefix: "refs/tags/${{ inputs.tag-name }}"
-
     strategy:
       fail-fast: false
       matrix:
@@ -47,9 +47,6 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Check outputs
-        run: ls -R
-
       - name: Upload Linux artifact
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
@@ -63,3 +60,36 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: target/${{ matrix.target }}/release/ut325f.exe
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        
+      - name: List before
+        run: ls -RF
+
+      - name: Rename and consolidate artifacts
+        run: |
+          mkdir release_assets
+          cp -p ./ut325f-linux-aarch64/ut325f "release_assets/ut325f-linux-aarch64-${{ github.ref_name }}"
+          cp -p ./ut325f-linux-x86_64/ut325f "release_assets/ut325f-linux-x86_64-${{ github.ref_name }}"
+          cp -p ./ut325f-windows-x86_64.exe/ut325f.exe "release_assets/ut325f-windows-x86_64-${{ github.ref_name }}.exe"
+
+      - name: List after
+        run: ls -RF
+
+      - name: List release assets
+        run: cd release_assets && ls -lF
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release_assets/*
