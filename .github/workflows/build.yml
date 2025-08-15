@@ -1,14 +1,14 @@
-name: Build
+name: Build and Release
 
 on:
-  push
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
 
 jobs:
   build:
-    env:
-      tag-name: ${{ inputs.tag-name }}
-      ref-tag-prefix: "refs/tags/${{ inputs.tag-name }}"
-
     strategy:
       fail-fast: false
       matrix:
@@ -47,9 +47,6 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Check outputs
-        run: ls -R
-
       - name: Upload Linux artifact
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
@@ -63,3 +60,32 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: target/${{ matrix.target }}/release/ut325f.exe
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        
+      - name: Rename artifacts with tag suffix
+        run: |
+          for dir in */; do
+            artifact_name=$(echo "$dir" | sed 's/\/$//')
+            old_name="ut325f"
+            new_name="${old_name}-${{ github.ref_name }}"
+            if [[ "$artifact_name" == *.exe ]]; then
+              mv "${dir}${old_name}.exe" "${dir}${new_name}.exe"
+            else
+              mv "${dir}${old_name}" "${dir}${new_name}"
+            fi
+          done
+          
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            */ut325f-${{ github.ref_name }}*
