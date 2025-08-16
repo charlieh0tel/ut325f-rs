@@ -1,6 +1,6 @@
 [package]
 name = "ut325f-rs"
-version = "0.9.2"
+version = "0.9.3"
 authors = ["Christopher Hoover <ch@murgatroid.com>"]
 description = "Support for Uni-T UT325-F thermocouple meter"
 edition = "2024"
