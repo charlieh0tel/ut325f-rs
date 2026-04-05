@@ -1,90 +1,16 @@
 name: Build and Release
 
-on: push
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: ut325f-linux-x86_64
-
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            artifact_name: ut325f-linux-aarch64
-
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: ut325f-windows-x86_64.exe
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          
-      - name: Install aarch64 cross-compiler
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-          
-      - name: Build executable
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Upload Linux artifact
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: target/${{ matrix.target }}/release/ut325f
-
-      - name: Upload Windows artifact
-        if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: target/${{ matrix.target }}/release/ut325f.exe
-
-  release:
-    name: Create GitHub Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      
-    steps:
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
-        
-      - name: List before
-        run: ls -RF
-
-      - name: Rename and consolidate artifacts
-        run: |
-          mkdir release_assets
-          cp -p ./ut325f-linux-aarch64/ut325f "release_assets/ut325f-linux-aarch64-${{ github.ref_name }}"
-          cp -p ./ut325f-linux-x86_64/ut325f "release_assets/ut325f-linux-x86_64-${{ github.ref_name }}"
-          cp -p ./ut325f-windows-x86_64.exe/ut325f.exe "release_assets/ut325f-windows-x86_64-${{ github.ref_name }}.exe"
-
-      - name: List after
-        run: ls -RF
-
-      - name: List release assets
-        run: cd release_assets && ls -lF
-
-      - name: Create release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: release_assets/*
+  build-release:
+    uses: charlieh0tel/deb-workflows/.github/workflows/rust-build-exes.yml@main
+    secrets: inherit
