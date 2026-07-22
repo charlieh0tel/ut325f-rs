@@ -4,7 +4,7 @@ use std::time::Duration;
 use zbus::fdo::{PropertiesChangedStream, PropertiesProxy};
 use zbus::zvariant::OwnedObjectPath;
 
-use super::Transport;
+use super::{DiscoveredMeter, METER_NAME_PREFIX, Transport, finalize_discovered};
 
 /// UUID of the meter's BLE UART bridge "Data Out" characteristic. The
 /// meter streams its readings here as GATT notifications, one frame per
@@ -12,6 +12,7 @@ use super::Transport;
 pub const DATA_OUT_UUID: &str = "0000ff02-0000-1000-8000-00805f9b34fb";
 
 const BLUEZ_SERVICE: &str = "org.bluez";
+const ADAPTER_IFACE: &str = "org.bluez.Adapter1";
 const DEVICE_IFACE: &str = "org.bluez.Device1";
 const GATT_CHARACTERISTIC_IFACE: &str = "org.bluez.GattCharacteristic1";
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -87,6 +88,96 @@ impl BluebusTransport {
             .context("Failed to enable notifications")?;
 
         Ok(Self { signals })
+    }
+
+    /// Scans for `timeout` and returns the UT325F meters known to
+    /// BlueZ, strongest signal first. Devices with `rssi: None` come
+    /// from BlueZ's cache (e.g. paired meters currently out of range).
+    ///
+    /// Scans on every powered adapter; a scan already started by
+    /// another Bluetooth client is reused.
+    pub async fn discover(timeout: Duration) -> Result<Vec<DiscoveredMeter>> {
+        let connection = ::bluebus::get_system_connection()
+            .await
+            .context("Failed to connect to system D-Bus")?;
+        Self::discover_on(&connection, timeout).await
+    }
+
+    /// Like [`discover`](Self::discover), but reuses an existing zbus
+    /// connection.
+    pub async fn discover_on(
+        connection: &zbus::Connection,
+        timeout: Duration,
+    ) -> Result<Vec<DiscoveredMeter>> {
+        let object_manager = ::bluebus::ObjectManagerProxy::builder(connection)
+            .build()
+            .await?;
+        let objects = object_manager.get_managed_objects().await?;
+
+        // Start discovery on every powered adapter. BlueZ returns
+        // InProgress if another client is already scanning; that scan
+        // serves us just as well.
+        let mut adapters = Vec::new();
+        for (path, interfaces) in &objects {
+            if !interfaces.contains_key(ADAPTER_IFACE) {
+                continue;
+            }
+            let adapter = ::bluebus::AdapterProxy::builder(connection)
+                .path(path.clone())?
+                .build()
+                .await?;
+            if !adapter.powered().await.unwrap_or(false) {
+                continue;
+            }
+            let we_started = match adapter.start_discovery().await {
+                Ok(()) => true,
+                Err(e) if e.to_string().contains("InProgress") => false,
+                Err(e) => {
+                    return Err(anyhow!(e))
+                        .with_context(|| format!("Failed to start discovery on {path}"));
+                }
+            };
+            adapters.push((adapter, we_started));
+        }
+        if adapters.is_empty() {
+            return Err(anyhow!("No powered Bluetooth adapter found"));
+        }
+
+        tokio::time::sleep(timeout).await;
+
+        let objects = object_manager.get_managed_objects().await;
+        for (adapter, we_started) in &adapters {
+            if *we_started {
+                let _ = adapter.stop_discovery().await;
+            }
+        }
+
+        let mut meters = Vec::new();
+        for interfaces in objects?.values() {
+            let Some(properties) = interfaces.get(DEVICE_IFACE) else {
+                continue;
+            };
+            let Some(name) = properties.get("Name") else {
+                continue;
+            };
+            let name: &str = name.downcast_ref()?;
+            if !name.starts_with(METER_NAME_PREFIX) {
+                continue;
+            }
+            let Some(address) = properties.get("Address") else {
+                continue;
+            };
+            let address: &str = address.downcast_ref()?;
+            let rssi = properties
+                .get("RSSI")
+                .and_then(|v| v.downcast_ref::<i16>().ok());
+            meters.push(DiscoveredMeter {
+                address: address.to_owned(),
+                name: name.to_owned(),
+                rssi,
+            });
+        }
+        Ok(finalize_discovered(meters))
     }
 }
 

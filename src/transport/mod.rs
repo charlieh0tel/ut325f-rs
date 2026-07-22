@@ -20,6 +20,34 @@ pub use serial::SerialTransport;
 #[cfg(any(feature = "bluebus", feature = "btleplug"))]
 pub const DATA_OUT_UUID: &str = "0000ff02-0000-1000-8000-00805f9b34fb";
 
+/// Prefix of the name the meter advertises (e.g. "UT325F AF37C47963D4").
+#[cfg(any(feature = "bluebus", feature = "btleplug"))]
+pub const METER_NAME_PREFIX: &str = "UT325F";
+
+/// A meter found by a BLE backend's `discover`.
+#[cfg(any(feature = "bluebus", feature = "btleplug"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredMeter {
+    /// Bluetooth address, suitable for [`Meter::open_ble`](crate::Meter).
+    pub address: String,
+    /// Advertised device name.
+    pub name: String,
+    /// Signal strength if the device was seen during the scan; `None`
+    /// for devices only known from the stack's cache (e.g. paired but
+    /// currently out of range or powered off).
+    pub rssi: Option<i16>,
+}
+
+/// Sorts strongest signal first (unseen devices last) and drops
+/// duplicate addresses.
+#[cfg(any(feature = "bluebus", feature = "btleplug"))]
+fn finalize_discovered(mut meters: Vec<DiscoveredMeter>) -> Vec<DiscoveredMeter> {
+    meters.sort_by(|a, b| a.address.cmp(&b.address));
+    meters.dedup_by(|a, b| a.address.eq_ignore_ascii_case(&b.address));
+    meters.sort_by_key(|m| std::cmp::Reverse(m.rssi.unwrap_or(i16::MIN)));
+    meters
+}
+
 /// The Bluetooth LE transport backend selected by feature flags. When
 /// both BLE features are enabled, `bluebus` is preferred; use the
 /// concrete transport types to pick explicitly.

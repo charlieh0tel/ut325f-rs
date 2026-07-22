@@ -4,15 +4,15 @@ mod reading;
 pub mod transport;
 mod utils;
 
-pub use crate::decoder::FrameDecoder;
-pub use crate::meter::Meter;
-pub use crate::reading::{HoldType, Reading};
-#[cfg(any(feature = "bluebus", feature = "btleplug"))]
-pub use crate::transport::BleTransport;
+pub use decoder::FrameDecoder;
+pub use meter::Meter;
+pub use reading::{HoldType, Reading};
 #[cfg(feature = "bluebus")]
-pub use crate::transport::BluebusTransport;
+pub use transport::BluebusTransport;
 #[cfg(feature = "btleplug")]
-pub use crate::transport::BtleplugTransport;
+pub use transport::BtleplugTransport;
 #[cfg(feature = "serial")]
-pub use crate::transport::SerialTransport;
-pub use crate::transport::Transport;
+pub use transport::SerialTransport;
+pub use transport::Transport;
+#[cfg(any(feature = "bluebus", feature = "btleplug"))]
+pub use transport::{BleTransport, DiscoveredMeter};
