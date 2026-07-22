@@ -26,6 +26,9 @@ impl<T: Transport> Meter<T> {
         }
     }
 
+    /// Returns the next reading, skipping corrupted frames. Errors only
+    /// on transport failure or when no valid frame arrives within the
+    /// read timeout.
     pub async fn read(&mut self) -> Result<Reading> {
         tokio::time::timeout(self.read_timeout, self.read_frame())
             .await
@@ -34,8 +37,13 @@ impl<T: Transport> Meter<T> {
 
     async fn read_frame(&mut self) -> Result<Reading> {
         loop {
+            // The decoder yields only checksum-valid frames; parse can
+            // still reject one (e.g. an unknown hold type) — skip it.
             if let Some(frame) = self.decoder.next_frame() {
-                return Reading::parse(&frame);
+                if let Ok(reading) = Reading::parse(&frame) {
+                    return Ok(reading);
+                }
+                continue;
             }
             let chunk = self.transport.recv().await?;
             self.decoder.push(&chunk);
@@ -71,5 +79,73 @@ impl Meter<crate::transport::BleTransport> {
         Ok(Self::new(
             crate::transport::BleTransport::open_only(timeout).await?,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reading::tests::fix_checksum;
+    use std::collections::VecDeque;
+
+    struct ChunkTransport {
+        chunks: VecDeque<Vec<u8>>,
+    }
+
+    impl Transport for ChunkTransport {
+        async fn recv(&mut self) -> Result<Vec<u8>> {
+            self.chunks
+                .pop_front()
+                .ok_or_else(|| anyhow!("Transport closed"))
+        }
+    }
+
+    fn meter_with(chunks: Vec<Vec<u8>>) -> Meter<ChunkTransport> {
+        Meter::new(ChunkTransport {
+            chunks: chunks.into(),
+        })
+    }
+
+    fn valid_frame() -> [u8; Reading::N_BYTES] {
+        let mut frame = [0u8; Reading::N_BYTES];
+        frame[..Reading::N_SYNC_BYTES].copy_from_slice(&Reading::SYNC);
+        fix_checksum(&mut frame);
+        frame
+    }
+
+    #[tokio::test]
+    async fn test_read_across_chunks() -> Result<()> {
+        let frame = valid_frame();
+        let mut meter = meter_with(vec![frame[..30].to_vec(), frame[30..].to_vec()]);
+        let reading = meter.read().await?;
+        assert_eq!(reading.hold_type, crate::reading::HoldType::Current);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_skips_corrupt_frame() -> Result<()> {
+        let mut corrupted = valid_frame();
+        corrupted[10] ^= 0x01;
+        let mut meter = meter_with(vec![corrupted.to_vec(), valid_frame().to_vec()]);
+        assert!(meter.read().await.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_skips_unparseable_frame() -> Result<()> {
+        // Checksum-valid but with an unknown hold type; read must skip
+        // to the following good frame rather than fail.
+        let mut bad_hold = valid_frame();
+        bad_hold[Reading::N_BYTES - 3] = 0xff;
+        fix_checksum(&mut bad_hold);
+        let mut meter = meter_with(vec![bad_hold.to_vec(), valid_frame().to_vec()]);
+        assert!(meter.read().await.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_transport_error() {
+        let mut meter = meter_with(vec![]);
+        assert!(meter.read().await.is_err());
     }
 }

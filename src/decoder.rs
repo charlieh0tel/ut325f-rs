@@ -4,7 +4,10 @@ use crate::reading::Reading;
 /// from an arbitrarily chunked byte stream.
 ///
 /// Transports deliver bytes with no alignment guarantees; the decoder
-/// scans for the sync header and yields complete frames.
+/// scans for the sync header and yields only frames whose checksum
+/// validates. A corrupted or truncated frame is skipped one byte at a
+/// time, so a genuine frame embedded after a false or damaged sync is
+/// still found.
 #[derive(Debug, Default)]
 pub struct FrameDecoder {
     buf: Vec<u8>,
@@ -20,30 +23,33 @@ impl FrameDecoder {
         self.buf.extend_from_slice(bytes);
     }
 
-    /// Returns the next complete frame, discarding any bytes preceding
-    /// the sync header. Returns `None` until a full frame is buffered.
+    /// Returns the next validated frame, discarding any bytes that do
+    /// not begin one. Returns `None` until a full valid frame is
+    /// buffered.
     pub fn next_frame(&mut self) -> Option<[u8; Reading::N_BYTES]> {
-        match self
-            .buf
-            .windows(Reading::N_SYNC_BYTES)
-            .position(|w| w == Reading::SYNC)
-        {
-            Some(start) => {
-                self.buf.drain(..start);
-                if self.buf.len() < Reading::N_BYTES {
-                    return None;
-                }
-                let frame: [u8; Reading::N_BYTES] =
-                    self.buf[..Reading::N_BYTES].try_into().unwrap();
-                self.buf.drain(..Reading::N_BYTES);
-                Some(frame)
-            }
-            None => {
+        loop {
+            let Some(start) = self
+                .buf
+                .windows(Reading::N_SYNC_BYTES)
+                .position(|w| w == Reading::SYNC)
+            else {
                 // No sync found; keep only a partial-sync tail.
                 let keep_from = self.buf.len().saturating_sub(Reading::N_SYNC_BYTES - 1);
                 self.buf.drain(..keep_from);
-                None
+                return None;
+            };
+            self.buf.drain(..start);
+            if self.buf.len() < Reading::N_BYTES {
+                return None;
             }
+            let frame: [u8; Reading::N_BYTES] = self.buf[..Reading::N_BYTES].try_into().unwrap();
+            if Reading::validate_frame(&frame) {
+                self.buf.drain(..Reading::N_BYTES);
+                return Some(frame);
+            }
+            // Bad candidate (corruption or a false sync): advance past
+            // the first sync byte and rescan.
+            self.buf.drain(..1);
         }
     }
 }
@@ -51,11 +57,13 @@ impl FrameDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reading::tests::fix_checksum;
 
     fn test_frame() -> [u8; Reading::N_BYTES] {
         let mut frame = [0u8; Reading::N_BYTES];
         frame[..Reading::N_SYNC_BYTES].copy_from_slice(&Reading::SYNC);
-        frame[Reading::N_BYTES - 1] = 0xee;
+        frame[Reading::N_BYTES - 4] = 0xee;
+        fix_checksum(&mut frame);
         frame
     }
 
@@ -114,5 +122,41 @@ mod tests {
         assert_eq!(decoder.next_frame(), None);
         decoder.push(&frame[2..]);
         assert_eq!(decoder.next_frame(), Some(frame));
+    }
+
+    #[test]
+    fn test_truncated_frame_does_not_swallow_next() {
+        // Frame A loses its last 6 bytes in transit; frame B arrives
+        // complete. B's sync falls inside what a naive decoder would
+        // consume as A's payload; the decoder must still yield B.
+        let mut decoder = FrameDecoder::new();
+        let frame = test_frame();
+        decoder.push(&frame[..Reading::N_BYTES - 6]);
+        decoder.push(&frame);
+        assert_eq!(decoder.next_frame(), Some(frame));
+        assert_eq!(decoder.next_frame(), None);
+    }
+
+    #[test]
+    fn test_corrupted_frame_is_skipped() {
+        let mut decoder = FrameDecoder::new();
+        let mut corrupted = test_frame();
+        corrupted[10] ^= 0x01;
+        decoder.push(&corrupted);
+        decoder.push(&test_frame());
+        assert_eq!(decoder.next_frame(), Some(test_frame()));
+        assert_eq!(decoder.next_frame(), None);
+    }
+
+    #[test]
+    fn test_false_sync_inside_garbage() {
+        // A sync pattern appears in noise with no valid frame behind
+        // it, followed by a real frame.
+        let mut decoder = FrameDecoder::new();
+        let mut noise = Reading::SYNC.to_vec();
+        noise.extend_from_slice(&[0x5a; 51]);
+        decoder.push(&noise);
+        decoder.push(&test_frame());
+        assert_eq!(decoder.next_frame(), Some(test_frame()));
     }
 }
