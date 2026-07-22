@@ -1,101 +1,67 @@
-use anyhow::Result;
-use anyhow::anyhow;
+use anyhow::{Result, anyhow};
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
-use tokio::time;
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
+use crate::decoder::FrameDecoder;
 use crate::reading::Reading;
+use crate::transport::Transport;
 
-pub struct Meter {
-    _sync_timeout: Duration,
-    port: String,
-    serial: Option<SerialStream>,
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A UT325F meter on some transport.
+///
+/// The meter streams readings unsolicited (roughly 3 per second); `read`
+/// returns the next one.
+pub struct Meter<T: Transport> {
+    transport: T,
+    decoder: FrameDecoder,
+    read_timeout: Duration,
 }
 
-impl Meter {
-    pub fn new(port: String) -> Self {
+impl<T: Transport> Meter<T> {
+    pub fn new(transport: T) -> Self {
         Meter {
-            _sync_timeout: Duration::from_secs(5),
-            port,
-            serial: None,
+            transport,
+            decoder: FrameDecoder::new(),
+            read_timeout: DEFAULT_READ_TIMEOUT,
         }
-    }
-
-    pub async fn open(&mut self) -> Result<()> {
-        let builder = tokio_serial::new(&self.port, 115200)
-            .data_bits(tokio_serial::DataBits::Eight)
-            .parity(tokio_serial::Parity::None)
-            .stop_bits(tokio_serial::StopBits::One)
-            .flow_control(tokio_serial::FlowControl::None)
-            .timeout(Duration::from_secs(1));
-
-        match builder.open_native_async() {
-            Ok(port) => {
-                self.serial = Some(port);
-                self.clear_buffer().await?;
-                Ok(())
-            }
-            Err(e) => Err(anyhow!("Failed to open serial port '{}': {}", self.port, e)),
-        }
-    }
-
-    async fn clear_buffer(&mut self) -> Result<()> {
-        for _ in 0..3 {
-            match self.read().await {
-                Ok(_) => (),
-                Err(ref e) if e.to_string().contains("TimedOut") => {
-                    // Ignore timeouts during clearing
-                }
-                Err(e) => eprintln!("Warning: Initial read error: {}", e),
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Ok(())
     }
 
     pub async fn read(&mut self) -> Result<Reading> {
-        let mut serial = self
-            .serial
-            .as_mut()
-            .ok_or_else(|| anyhow!("Serial port is not open"))?;
-        let mut sync_buf = vec![0u8; Reading::N_SYNC_BYTES];
-        let mut rest_buf = vec![0u8; Reading::N_BYTES - Reading::N_SYNC_BYTES];
-
-        loop {
-            read_with_timeout(&mut serial, &mut sync_buf, self._sync_timeout).await?;
-            if sync_buf == Reading::SYNC {
-                break;
-            }
-        }
-        read_with_timeout(&mut serial, &mut rest_buf, self._sync_timeout).await?;
-
-        let mut combined = sync_buf;
-        combined.extend_from_slice(&rest_buf);
-        let reading_array: [u8; Reading::N_BYTES] = combined.try_into().map_err(|v: Vec<u8>| {
-            anyhow!(
-                "Error converting Vec<u8> to [u8; {}]: {:?}",
-                Reading::N_BYTES,
-                v
-            )
-        })?;
-
-        Reading::parse(&reading_array)
+        tokio::time::timeout(self.read_timeout, self.read_frame())
+            .await
+            .map_err(|_| anyhow!("Timeout reading data"))?
     }
 
-    pub async fn close(&mut self) -> Result<()> {
-        self.serial.take();
-        Ok(())
+    async fn read_frame(&mut self) -> Result<Reading> {
+        loop {
+            if let Some(frame) = self.decoder.next_frame() {
+                return Reading::parse(&frame);
+            }
+            let chunk = self.transport.recv().await?;
+            self.decoder.push(&chunk);
+        }
     }
 }
 
-async fn read_with_timeout<R>(mut reader: R, buf: &mut [u8], timeout: Duration) -> Result<()>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    match time::timeout(timeout, reader.read_exact(buf)).await {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(anyhow!("Error reading data: {}", e)),
-        Err(_) => Err(anyhow!("Timeout reading data")),
+#[cfg(feature = "serial")]
+impl Meter<crate::transport::SerialTransport> {
+    /// Opens the meter on a USB serial port (e.g. "/dev/ttyUSB0").
+    pub async fn open_serial(port: &str) -> Result<Self> {
+        Ok(Self::new(
+            crate::transport::SerialTransport::open(port).await?,
+        ))
+    }
+}
+
+#[cfg(any(feature = "bluebus", feature = "btleplug"))]
+impl Meter<crate::transport::BleTransport> {
+    /// Opens the meter over Bluetooth LE by its Bluetooth address
+    /// (e.g. "E8:26:CF:F1:23:61"), using the enabled BLE backend. The
+    /// device must already be known to the Bluetooth stack (paired or
+    /// discovered).
+    pub async fn open_ble(address: &str) -> Result<Self> {
+        Ok(Self::new(
+            crate::transport::BleTransport::open(address).await?,
+        ))
     }
 }

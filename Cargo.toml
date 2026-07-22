@@ -10,9 +10,20 @@ keywords = ["usb", "thermocouple", "measurement"]
 categories = ["command-line-utilities"]
 readme = "README.md"
 
+[features]
+default = ["serial"]
+serial = ["dep:tokio-serial"]
+bluebus = ["dep:bluebus", "dep:zbus", "dep:futures"]
+btleplug = ["dep:btleplug", "dep:uuid", "dep:futures"]
+
 [dependencies]
 anyhow = "1.0.98"
+bluebus = { version = "0.1.10", optional = true }
+btleplug = { version = "0.12", optional = true }
 clap = "4.5.36"
 clap_derive = "4.5.32"
+futures = { version = "0.3.31", optional = true }
 tokio = { version = "1.44.2", features = ["full"]}
-tokio-serial = "5.4.5"
+tokio-serial = { version = "5.4.5", optional = true }
+uuid = { version = "1", optional = true }
+zbus = { version = "5.5", optional = true }
