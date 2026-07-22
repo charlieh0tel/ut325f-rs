@@ -14,3 +14,5 @@ jobs:
   build-release:
     uses: charlieh0tel/deb-workflows/.github/workflows/rust-build-exes.yml@main
     secrets: inherit
+    with:
+      features: btleplug
