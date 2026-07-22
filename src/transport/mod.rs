@@ -38,14 +38,55 @@ pub struct DiscoveredMeter {
     pub rssi: Option<i16>,
 }
 
-/// Sorts strongest signal first (unseen devices last) and drops
-/// duplicate addresses.
+/// Sorts strongest signal first (unseen devices last), keeping only the
+/// strongest observation of each address (a meter can be seen by more
+/// than one adapter).
 #[cfg(any(feature = "bluebus", feature = "btleplug"))]
 fn finalize_discovered(mut meters: Vec<DiscoveredMeter>) -> Vec<DiscoveredMeter> {
-    meters.sort_by(|a, b| a.address.cmp(&b.address));
+    meters.sort_by(|a, b| {
+        a.address
+            .to_ascii_uppercase()
+            .cmp(&b.address.to_ascii_uppercase())
+            .then(b.rssi.unwrap_or(i16::MIN).cmp(&a.rssi.unwrap_or(i16::MIN)))
+    });
     meters.dedup_by(|a, b| a.address.eq_ignore_ascii_case(&b.address));
     meters.sort_by_key(|m| std::cmp::Reverse(m.rssi.unwrap_or(i16::MIN)));
     meters
+}
+
+#[cfg(all(test, any(feature = "bluebus", feature = "btleplug")))]
+mod tests {
+    use super::*;
+
+    fn meter(address: &str, rssi: Option<i16>) -> DiscoveredMeter {
+        DiscoveredMeter {
+            address: address.to_owned(),
+            name: format!("UT325F {address}"),
+            rssi,
+        }
+    }
+
+    #[test]
+    fn test_finalize_keeps_strongest_observation() {
+        let meters = finalize_discovered(vec![
+            meter("AA:00:00:00:00:01", Some(-90)),
+            meter("AA:00:00:00:00:02", Some(-60)),
+            meter("aa:00:00:00:00:01", Some(-30)),
+            meter("AA:00:00:00:00:03", None),
+        ]);
+        let summary: Vec<_> = meters
+            .iter()
+            .map(|m| (m.address.as_str(), m.rssi))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("aa:00:00:00:00:01", Some(-30)),
+                ("AA:00:00:00:00:02", Some(-60)),
+                ("AA:00:00:00:00:03", None),
+            ]
+        );
+    }
 }
 
 #[cfg(any(feature = "bluebus", feature = "btleplug"))]

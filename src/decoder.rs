@@ -138,6 +138,40 @@ mod tests {
     }
 
     #[test]
+    fn test_checksum_collision_does_not_swallow_embedded_frame() {
+        // Construct 20 bytes of "noise" starting with a sync pattern,
+        // followed by a real frame, such that the first 56-byte
+        // candidate passes the checksum by collision but carries an
+        // invalid hold type. The decoder must reject that candidate and
+        // still find the embedded real frame.
+        let mut good = [0u8; Reading::N_BYTES];
+        good[..Reading::N_SYNC_BYTES].copy_from_slice(&Reading::SYNC);
+        good[33] = 0x77; // Candidate's hold-type byte: invalid.
+        good[34] = 0x0f; // Candidate's stored checksum: 0x0fa0.
+        good[35] = 0xa0;
+        fix_checksum(&mut good);
+
+        let mut noise = [0u8; 20];
+        noise[..Reading::N_SYNC_BYTES].copy_from_slice(&Reading::SYNC);
+        // Tune the filler bytes so the candidate's sum equals 0x0fa0.
+        let candidate_sum = |noise: &[u8; 20]| -> u32 {
+            noise.iter().chain(&good[..34]).map(|&b| u32::from(b)).sum()
+        };
+        let mut deficit = 0x0fa0 - candidate_sum(&noise);
+        for byte in &mut noise[Reading::N_SYNC_BYTES..] {
+            let add = deficit.min(255);
+            *byte = add as u8;
+            deficit -= add;
+        }
+        assert_eq!(candidate_sum(&noise), 0x0fa0);
+
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&noise);
+        decoder.push(&good);
+        assert_eq!(decoder.next_frame(), Some(good));
+    }
+
+    #[test]
     fn test_corrupted_frame_is_skipped() {
         let mut decoder = FrameDecoder::new();
         let mut corrupted = test_frame();

@@ -1,3 +1,4 @@
+use std::io;
 use std::mem;
 use std::time::SystemTime;
 
@@ -43,10 +44,14 @@ impl Reading {
     pub const N_SYNC_BYTES: usize = Self::SYNC.len();
     const N_CHECKSUMMED_BYTES: usize = Self::N_BYTES - 2;
 
-    /// Returns true if `buf` starts with the sync header and its
-    /// trailing checksum matches.
+    /// Returns true if `buf` is a parseable frame: sync header,
+    /// matching checksum, and a known hold type. Checking everything
+    /// `parse` rejects lets the decoder discard a bad candidate
+    /// byte-by-byte instead of consuming a real frame embedded in it.
     pub fn validate_frame(buf: &[u8; Self::N_BYTES]) -> bool {
-        buf[..Self::N_SYNC_BYTES] == Self::SYNC && Self::checksum_ok(buf)
+        buf[..Self::N_SYNC_BYTES] == Self::SYNC
+            && Self::checksum_ok(buf)
+            && HoldType::try_from(buf[Self::N_BYTES - 3]).is_ok()
     }
 
     /// The frame's last two bytes are a big-endian u16 checksum: the
@@ -155,24 +160,27 @@ impl Reading {
         }
     }
 
-    pub fn print_current_temps(&self) {
-        print!("{:.3}", system_time_to_unix_seconds(self.timestamp));
-        for temp in self.current_temps_c.iter() {
-            print!(" {:7.3}", temp);
+    /// Writes the timestamp and current temperatures as one line.
+    pub fn write_current_temps(&self, writer: &mut impl io::Write) -> io::Result<()> {
+        write!(writer, "{:.3}", system_time_to_unix_seconds(self.timestamp))?;
+        for temp in &self.current_temps_c {
+            write!(writer, " {:7.3}", temp)?;
         }
-        println!();
+        writeln!(writer)
     }
 
-    pub fn print_all_temps(&self) {
-        print!("{:.3}", system_time_to_unix_seconds(self.timestamp));
+    /// Writes the timestamp, current temperatures, hold type, and held
+    /// temperatures as one line.
+    pub fn write_all_temps(&self, writer: &mut impl io::Write) -> io::Result<()> {
+        write!(writer, "{:.3}", system_time_to_unix_seconds(self.timestamp))?;
         for temp in &self.current_temps_c {
-            print!(" {:7.3}", temp);
+            write!(writer, " {:7.3}", temp)?;
         }
-        print!(" {:?}", self.hold_type);
+        write!(writer, " {:?}", self.hold_type)?;
         for temp in &self.held_temps_c {
-            print!(" {:7.3}", temp);
+            write!(writer, " {:7.3}", temp)?;
         }
-        println!();
+        writeln!(writer)
     }
 }
 

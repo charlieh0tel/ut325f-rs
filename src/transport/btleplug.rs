@@ -137,9 +137,19 @@ impl BtleplugTransport {
 
         tokio::time::sleep(timeout).await;
 
+        // Tolerate per-adapter enumeration failures; error out only if
+        // they may have hidden every meter.
         let mut meters = Vec::new();
+        let mut enumeration_error = None;
         for adapter in &adapters {
-            for peripheral in adapter.peripherals().await? {
+            let peripherals = match adapter.peripherals().await {
+                Ok(peripherals) => peripherals,
+                Err(e) => {
+                    enumeration_error = Some(e);
+                    continue;
+                }
+            };
+            for peripheral in peripherals {
                 // A device whose properties cannot be read the first
                 // time gets one retry before being skipped, so a
                 // transient fault does not silently hide a meter.
@@ -163,7 +173,17 @@ impl BtleplugTransport {
                 });
             }
         }
-        drop(guard);
+
+        // Stop the scans we started; the guard covers earlier exits.
+        for adapter in guard.adapters.drain(..) {
+            let _ = adapter.stop_scan().await;
+        }
+
+        if meters.is_empty()
+            && let Some(e) = enumeration_error
+        {
+            return Err(Error::Btleplug(e));
+        }
         Ok(finalize_discovered(meters))
     }
 }

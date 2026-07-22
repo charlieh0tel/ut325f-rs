@@ -20,7 +20,12 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 /// client holds it.
 pub struct BluebusTransport {
     signals: PropertiesChangedStream,
-    characteristic: ::bluebus::GattCharacteristic1Proxy<'static>,
+    // The notification session lives on its own D-Bus connection. BlueZ
+    // scopes sessions to the client connection and ends them when it
+    // closes, so dropping the transport reliably stops notifications on
+    // every path (timeout, cancellation, any thread) without racing
+    // other transports that share the caller's connection.
+    _notify_connection: zbus::Connection,
 }
 
 impl BluebusTransport {
@@ -67,16 +72,18 @@ impl BluebusTransport {
                 address: address.to_owned(),
             })?;
 
+        let notify_connection = ::bluebus::get_system_connection().await?;
+
         // Subscribe to property changes before enabling notifications so
         // no frames are missed.
-        let properties = PropertiesProxy::builder(connection)
+        let properties = PropertiesProxy::builder(&notify_connection)
             .destination(BLUEZ_SERVICE)?
             .path(characteristic_path.clone())?
             .build()
             .await?;
         let signals = properties.receive_properties_changed().await?;
 
-        let mut characteristic = ::bluebus::GattCharacteristic1Proxy::builder(connection)
+        let mut characteristic = ::bluebus::GattCharacteristic1Proxy::builder(&notify_connection)
             .destination(BLUEZ_SERVICE)?
             .path(characteristic_path)?
             .build()
@@ -85,7 +92,7 @@ impl BluebusTransport {
 
         Ok(Self {
             signals,
-            characteristic,
+            _notify_connection: notify_connection,
         })
     }
 
@@ -112,21 +119,23 @@ impl BluebusTransport {
             .await?;
         let objects = object_manager.get_managed_objects().await?;
 
-        // Start discovery on every powered adapter. The guard stops the
-        // scans we started, including on error and cancellation paths.
-        // BlueZ returns InProgress if another client is already
-        // scanning; that scan serves us just as well and is not ours to
-        // stop.
-        let mut guard = DiscoveryGuard {
-            adapters: Vec::new(),
-        };
+        // Discovery runs on its own D-Bus connection: BlueZ ends a
+        // client's scans when its connection closes, so scans cannot
+        // outlive this call even on cancellation or a failed
+        // StopDiscovery below.
+        let scan_connection = ::bluebus::get_system_connection().await?;
+
+        // Start discovery on every powered adapter. BlueZ returns
+        // InProgress if another client is already scanning; that scan
+        // serves us just as well and is not ours to stop.
+        let mut started = Vec::new();
         let mut usable = 0;
         let mut adapter_error = None;
         for (path, interfaces) in &objects {
             if !interfaces.contains_key(ADAPTER_IFACE) {
                 continue;
             }
-            let adapter = ::bluebus::AdapterProxy::builder(connection)
+            let adapter = ::bluebus::AdapterProxy::builder(&scan_connection)
                 .path(path.clone())?
                 .build()
                 .await?;
@@ -143,7 +152,7 @@ impl BluebusTransport {
             }
             match adapter.start_discovery().await {
                 Ok(()) => {
-                    guard.adapters.push(adapter);
+                    started.push(adapter);
                     usable += 1;
                 }
                 Err(e) if e.to_string().contains("InProgress") => usable += 1,
@@ -162,7 +171,10 @@ impl BluebusTransport {
         tokio::time::sleep(timeout).await;
 
         let objects = object_manager.get_managed_objects().await?;
-        drop(guard);
+        for adapter in &started {
+            let _ = adapter.stop_discovery().await;
+        }
+        drop(scan_connection);
 
         let mut meters = Vec::new();
         for interfaces in objects.values() {
@@ -224,40 +236,6 @@ impl Transport for BluebusTransport {
             if let Some(value) = args.changed_properties.get("Value") {
                 return Ok(value.try_clone()?.try_into()?);
             }
-        }
-    }
-}
-
-impl Drop for BluebusTransport {
-    /// Ends the notification session. Without this it would linger for
-    /// the life of the D-Bus connection, which an application may share
-    /// and keep open long after this transport is gone.
-    fn drop(&mut self) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let mut characteristic = self.characteristic.clone();
-        handle.spawn(async move {
-            let _ = characteristic.stop_notify().await;
-        });
-    }
-}
-
-/// Stops the discovery sessions a scan started, including on error and
-/// cancellation paths.
-struct DiscoveryGuard {
-    adapters: Vec<::bluebus::AdapterProxy<'static>>,
-}
-
-impl Drop for DiscoveryGuard {
-    fn drop(&mut self) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        for adapter in self.adapters.drain(..) {
-            handle.spawn(async move {
-                let _ = adapter.stop_discovery().await;
-            });
         }
     }
 }

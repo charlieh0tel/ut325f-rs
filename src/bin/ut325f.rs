@@ -46,16 +46,23 @@ struct Args {
 }
 
 async fn run<T: Transport>(mut meter: Meter<T>, held_temps: bool) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
     loop {
-        match meter.read().await {
-            Ok(reading) => {
-                if held_temps {
-                    reading.print_all_temps();
-                } else {
-                    reading.print_current_temps();
-                }
-            }
-            Err(e) => return Err(anyhow!("Error reading data: {}", e)),
+        let reading = meter
+            .read()
+            .await
+            .map_err(|e| anyhow!("Error reading data: {}", e))?;
+        let written = if held_temps {
+            reading.write_all_temps(&mut stdout)
+        } else {
+            reading.write_current_temps(&mut stdout)
+        };
+        match written {
+            Ok(()) => {}
+            // Reading stops when the consumer goes away (e.g. piped to
+            // head).
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(e) => return Err(e.into()),
         }
     }
 }
