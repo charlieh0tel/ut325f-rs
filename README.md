@@ -18,7 +18,9 @@ temperature meter.
 
   ```sh
   cargo build --features bluebus   # or --features btleplug
-  ut325f --ble E8:26:CF:F1:23:61
+  ut325f --discover                # scan and list meters
+  ut325f --ble E8:26:CF:F1:23:61   # connect by address
+  ut325f --ble                     # connect to the only meter found
   ```
 
   If both BLE features are enabled, `Meter::open_ble` uses `bluebus`;
