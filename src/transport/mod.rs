@@ -48,6 +48,24 @@ fn finalize_discovered(mut meters: Vec<DiscoveredMeter>) -> Vec<DiscoveredMeter>
     meters
 }
 
+#[cfg(any(feature = "bluebus", feature = "btleplug"))]
+fn exactly_one(meters: Vec<DiscoveredMeter>) -> anyhow::Result<DiscoveredMeter> {
+    use anyhow::anyhow;
+    let mut meters = meters.into_iter();
+    let Some(meter) = meters.next() else {
+        return Err(anyhow!("No UT325F meters found"));
+    };
+    let extras: Vec<_> = meters.map(|m| m.address).collect();
+    if !extras.is_empty() {
+        return Err(anyhow!(
+            "Multiple UT325F meters found ({}, {}); open one by address",
+            meter.address,
+            extras.join(", ")
+        ));
+    }
+    Ok(meter)
+}
+
 /// The Bluetooth LE transport backend selected by feature flags. When
 /// both BLE features are enabled, `bluebus` is preferred; use the
 /// concrete transport types to pick explicitly.

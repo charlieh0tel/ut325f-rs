@@ -75,6 +75,14 @@ impl BtleplugTransport {
         })
     }
 
+    /// Discovers meters for `timeout` and connects to the only meter
+    /// found; errors if there are none or more than one (opening an
+    /// arbitrary meter could pick the wrong one).
+    pub async fn open_only(timeout: Duration) -> Result<Self> {
+        let meter = super::exactly_one(Self::discover(timeout).await?)?;
+        Self::open(&meter.address).await
+    }
+
     /// Scans for `timeout` and returns the UT325F meters known to the
     /// Bluetooth stack, strongest signal first. Devices with
     /// `rssi: None` come from the stack's cache (e.g. paired meters

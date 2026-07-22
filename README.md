@@ -30,6 +30,7 @@ temperature meter.
 ```rust
 let mut meter = ut325f_rs::Meter::open_serial("/dev/ttyUSB0").await?; // feature "serial"
 let mut meter = ut325f_rs::Meter::open_ble("E8:26:CF:F1:23:61").await?; // feature "bluebus" or "btleplug"
+let mut meter = ut325f_rs::Meter::open_ble_only(Duration::from_secs(8)).await?; // sole discovered meter
 let reading = meter.read().await?;
 ```
 

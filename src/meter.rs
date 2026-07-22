@@ -64,4 +64,12 @@ impl Meter<crate::transport::BleTransport> {
             crate::transport::BleTransport::open(address).await?,
         ))
     }
+
+    /// Discovers meters over Bluetooth LE for `timeout` and opens the
+    /// only one found; errors if there are none or more than one.
+    pub async fn open_ble_only(timeout: std::time::Duration) -> Result<Self> {
+        Ok(Self::new(
+            crate::transport::BleTransport::open_only(timeout).await?,
+        ))
+    }
 }

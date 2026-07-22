@@ -103,6 +103,23 @@ impl BluebusTransport {
         Self::discover_on(&connection, timeout).await
     }
 
+    /// Discovers meters for `timeout` and connects to the only meter
+    /// found; errors if there are none or more than one (opening an
+    /// arbitrary meter could pick the wrong one).
+    pub async fn open_only(timeout: Duration) -> Result<Self> {
+        let connection = ::bluebus::get_system_connection()
+            .await
+            .context("Failed to connect to system D-Bus")?;
+        Self::open_only_on(&connection, timeout).await
+    }
+
+    /// Like [`open_only`](Self::open_only), but reuses an existing zbus
+    /// connection.
+    pub async fn open_only_on(connection: &zbus::Connection, timeout: Duration) -> Result<Self> {
+        let meter = super::exactly_one(Self::discover_on(connection, timeout).await?)?;
+        Self::open_on(connection, &meter.address).await
+    }
+
     /// Like [`discover`](Self::discover), but reuses an existing zbus
     /// connection.
     pub async fn discover_on(
