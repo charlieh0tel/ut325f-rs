@@ -1,4 +1,3 @@
-use anyhow::{Context, Result, anyhow};
 use btleplug::api::{
     BDAddr, Central, Manager as _, Peripheral as _, ScanFilter, ValueNotification,
 };
@@ -9,6 +8,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use super::{DATA_OUT_UUID, DiscoveredMeter, METER_NAME_PREFIX, Transport, finalize_discovered};
+use crate::error::{Error, Result};
 
 /// Transport over Bluetooth LE using the `btleplug` crate.
 ///
@@ -29,7 +29,7 @@ impl BtleplugTransport {
     pub async fn open(address: &str) -> Result<Self> {
         let target: BDAddr = address
             .parse()
-            .map_err(|e| anyhow!("Invalid Bluetooth address '{address}': {e}"))?;
+            .map_err(|_| Error::InvalidAddress(address.to_owned()))?;
 
         let mut peripheral = None;
         'adapters: for adapter in &all_adapters().await? {
@@ -40,14 +40,16 @@ impl BtleplugTransport {
                 }
             }
         }
-        let peripheral = peripheral
-            .ok_or_else(|| anyhow!("Bluetooth device {address} is not known; pair it first"))?;
+        let peripheral = peripheral.ok_or_else(|| Error::DeviceNotKnown(address.to_owned()))?;
 
         if !peripheral.is_connected().await? {
             peripheral
                 .connect()
                 .await
-                .with_context(|| format!("Failed to connect to {address}"))?;
+                .map_err(|e| Error::ConnectFailed {
+                    address: address.to_owned(),
+                    source: Box::new(e),
+                })?;
         }
         peripheral.discover_services().await?;
 
@@ -56,17 +58,15 @@ impl BtleplugTransport {
             .characteristics()
             .into_iter()
             .find(|c| c.uuid == data_out_uuid)
-            .ok_or_else(|| {
-                anyhow!("Characteristic {DATA_OUT_UUID} not found on {address}; is this a UT325F?")
+            .ok_or_else(|| Error::CharacteristicNotFound {
+                uuid: DATA_OUT_UUID.to_owned(),
+                address: address.to_owned(),
             })?;
 
         // Take the notification stream before subscribing so no frames
         // are missed.
         let notifications = peripheral.notifications().await?;
-        peripheral
-            .subscribe(&characteristic)
-            .await
-            .context("Failed to enable notifications")?;
+        peripheral.subscribe(&characteristic).await?;
 
         Ok(Self {
             _peripheral: peripheral,
@@ -102,8 +102,9 @@ impl BtleplugTransport {
             }
         }
         if scanning.is_empty() {
-            return Err(last_error.expect("all_adapters returns at least one adapter"))
-                .context("Failed to start discovery on any adapter");
+            return Err(Error::Btleplug(
+                last_error.expect("all_adapters returns at least one adapter"),
+            ));
         }
 
         tokio::time::sleep(timeout).await;
@@ -143,12 +144,10 @@ impl BtleplugTransport {
 }
 
 async fn all_adapters() -> Result<Vec<Adapter>> {
-    let manager = Manager::new()
-        .await
-        .context("Failed to initialize btleplug")?;
+    let manager = Manager::new().await?;
     let adapters = manager.adapters().await?;
     if adapters.is_empty() {
-        return Err(anyhow!("No Bluetooth adapter found"));
+        return Err(Error::NoUsableAdapter);
     }
     Ok(adapters)
 }
@@ -160,7 +159,7 @@ impl Transport for BtleplugTransport {
                 .notifications
                 .next()
                 .await
-                .ok_or_else(|| anyhow!("BLE notification stream ended"))?;
+                .ok_or(Error::Disconnected("notification stream ended"))?;
             if notification.uuid == self.data_out_uuid {
                 return Ok(notification.value);
             }

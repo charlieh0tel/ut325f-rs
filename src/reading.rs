@@ -1,8 +1,7 @@
-use anyhow::Result;
-use anyhow::anyhow;
 use std::mem;
 use std::time::SystemTime;
 
+use crate::error::{Error, Result};
 use crate::utils::system_time_to_unix_seconds;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -17,7 +16,7 @@ pub enum HoldType {
 impl TryFrom<u8> for HoldType {
     type Error = ();
 
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
+    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::Current),
             1 => Ok(Self::Maximum),
@@ -66,7 +65,7 @@ impl Reading {
     fn unpack_f32(buf: &[u8], offset: &mut usize) -> Result<f32> {
         let size = mem::size_of::<f32>();
         if *offset + size > buf.len() {
-            return Err(anyhow!("Read beyond buffer"));
+            return Err(Error::MalformedFrame("read beyond buffer"));
         }
         let bytes = &buf[*offset..*offset + size];
         let value = f32::from_le_bytes(bytes.try_into().unwrap());
@@ -77,7 +76,7 @@ impl Reading {
     fn unpack_u8(buf: &[u8], offset: &mut usize) -> Result<u8> {
         let size = mem::size_of::<u8>();
         if *offset + size > buf.len() {
-            return Err(anyhow!("Read beyond buffer"));
+            return Err(Error::MalformedFrame("read beyond buffer"));
         }
         let value = buf[*offset];
         *offset += size;
@@ -87,7 +86,7 @@ impl Reading {
     fn unpack_u16(buf: &[u8], offset: &mut usize) -> Result<u16> {
         let size = mem::size_of::<u16>();
         if *offset + size > buf.len() {
-            return Err(anyhow!("Read beyond buffer"));
+            return Err(Error::MalformedFrame("read beyond buffer"));
         }
         let bytes = &buf[*offset..*offset + size];
         let value = u16::from_le_bytes(bytes.try_into().unwrap());
@@ -98,7 +97,7 @@ impl Reading {
     fn unpack_u32(buf: &[u8], offset: &mut usize) -> Result<u32> {
         let size = mem::size_of::<u32>();
         if *offset + size > buf.len() {
-            return Err(anyhow!("Read beyond buffer"));
+            return Err(Error::MalformedFrame("read beyond buffer"));
         }
         let bytes = &buf[*offset..*offset + size];
         let value = u32::from_le_bytes(bytes.try_into().unwrap());
@@ -107,14 +106,11 @@ impl Reading {
     }
 
     pub fn parse(buf: &[u8; Self::N_BYTES]) -> Result<Self> {
-        if buf.len() != Self::N_BYTES {
-            return Err(anyhow!("Incorrect buffer size"));
-        }
         if buf[..Self::N_SYNC_BYTES] != Self::SYNC {
-            return Err(anyhow!("Bad sync header"));
+            return Err(Error::BadSyncHeader);
         }
         if !Self::checksum_ok(buf) {
-            return Err(anyhow!("Checksum mismatch"));
+            return Err(Error::ChecksumMismatch);
         }
 
         let mut offset = Self::N_SYNC_BYTES;
@@ -143,7 +139,7 @@ impl Reading {
         Self::unpack_u32(buf, &mut offset)?; // unknown
         let hold_type_raw = Self::unpack_u8(buf, &mut offset)?;
         let hold_type =
-            HoldType::try_from(hold_type_raw).map_err(|_| anyhow!("Invalid HoldType"))?;
+            HoldType::try_from(hold_type_raw).map_err(|_| Error::InvalidHoldType(hold_type_raw))?;
         Self::unpack_u16(buf, &mut offset)?; // checksum, validated above
 
         if offset == Self::N_BYTES {
@@ -155,7 +151,7 @@ impl Reading {
                 meter_temp_c,
             })
         } else {
-            Err(anyhow!("Failed to parse all bytes"))
+            Err(Error::MalformedFrame("trailing bytes"))
         }
     }
 
@@ -236,8 +232,7 @@ pub(crate) mod tests {
         let mut buffer = [0u8; Reading::N_BYTES];
         buffer[0] = 0x00; // Corrupt the sync header
         let reading_result = Reading::parse(&buffer);
-        assert!(reading_result.is_err());
-        assert_eq!(reading_result.unwrap_err().to_string(), "Bad sync header");
+        assert!(matches!(reading_result, Err(Error::BadSyncHeader)));
         Ok(())
     }
 
@@ -248,8 +243,7 @@ pub(crate) mod tests {
         buffer[Reading::N_BYTES - 3] = 0xff; // Invalid HoldType value
         fix_checksum(&mut buffer);
         let reading_result = Reading::parse(&buffer);
-        assert!(reading_result.is_err());
-        assert_eq!(reading_result.unwrap_err().to_string(), "Invalid HoldType");
+        assert!(matches!(reading_result, Err(Error::InvalidHoldType(0xff))));
         Ok(())
     }
 
@@ -260,8 +254,7 @@ pub(crate) mod tests {
         fix_checksum(&mut buffer);
         buffer[10] ^= 0x01; // Corrupt one payload byte
         let reading_result = Reading::parse(&buffer);
-        assert!(reading_result.is_err());
-        assert_eq!(reading_result.unwrap_err().to_string(), "Checksum mismatch");
+        assert!(matches!(reading_result, Err(Error::ChecksumMismatch)));
         Ok(())
     }
 

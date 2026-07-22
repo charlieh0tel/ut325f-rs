@@ -1,7 +1,7 @@
-use anyhow::{Result, anyhow};
 use std::time::Duration;
 
 use crate::decoder::FrameDecoder;
+use crate::error::{Error, Result};
 use crate::reading::Reading;
 use crate::transport::Transport;
 
@@ -32,7 +32,7 @@ impl<T: Transport> Meter<T> {
     pub async fn read(&mut self) -> Result<Reading> {
         tokio::time::timeout(self.read_timeout, self.read_frame())
             .await
-            .map_err(|_| anyhow!("Timeout reading data"))?
+            .map_err(|_| Error::ReadTimeout)?
     }
 
     async fn read_frame(&mut self) -> Result<Reading> {
@@ -96,7 +96,7 @@ mod tests {
         async fn recv(&mut self) -> Result<Vec<u8>> {
             self.chunks
                 .pop_front()
-                .ok_or_else(|| anyhow!("Transport closed"))
+                .ok_or(Error::Disconnected("test transport closed"))
         }
     }
 

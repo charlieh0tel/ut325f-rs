@@ -1,10 +1,12 @@
 mod decoder;
+mod error;
 mod meter;
 mod reading;
 pub mod transport;
 mod utils;
 
 pub use decoder::FrameDecoder;
+pub use error::{Error, Result};
 pub use meter::Meter;
 pub use reading::{HoldType, Reading};
 #[cfg(feature = "bluebus")]

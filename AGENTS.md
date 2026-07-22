@@ -8,3 +8,4 @@
 - Do not add Claude attribution to commit or PR bodies.
 - PRs should generally be comprised of one functional change; suggest
   making a commit before moving onto something unrelated.
+- CLI code can use anyhow!  library code must not use anyhow!

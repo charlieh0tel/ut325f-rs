@@ -1,10 +1,10 @@
-use anyhow::{Context, Result, anyhow};
 use futures::StreamExt;
 use std::time::Duration;
 use zbus::fdo::{PropertiesChangedStream, PropertiesProxy};
 use zbus::zvariant::OwnedObjectPath;
 
 use super::{DiscoveredMeter, METER_NAME_PREFIX, Transport, finalize_discovered};
+use crate::error::{Error, Result};
 
 /// UUID of the meter's BLE UART bridge "Data Out" characteristic. The
 /// meter streams its readings here as GATT notifications, one frame per
@@ -31,9 +31,7 @@ impl BluebusTransport {
     /// Connects to the meter with the given Bluetooth address
     /// (e.g. "E8:26:CF:F1:23:61") and starts notifications.
     pub async fn open(address: &str) -> Result<Self> {
-        let connection = ::bluebus::get_system_connection()
-            .await
-            .context("Failed to connect to system D-Bus")?;
+        let connection = ::bluebus::get_system_connection().await?;
         Self::open_on(&connection, address).await
     }
 
@@ -46,26 +44,25 @@ impl BluebusTransport {
 
         let device_path = find_device(&object_manager, address)
             .await?
-            .ok_or_else(|| {
-                anyhow!("Bluetooth device {address} is not known to BlueZ; pair it first")
-            })?;
+            .ok_or_else(|| Error::DeviceNotKnown(address.to_owned()))?;
 
         let device = ::bluebus::DeviceProxy::builder(connection)
             .path(device_path.clone())?
             .build()
             .await?;
         if !device.connected().await? {
-            device
-                .connect()
-                .await
-                .with_context(|| format!("Failed to connect to {address}"))?;
+            device.connect().await.map_err(|e| Error::ConnectFailed {
+                address: address.to_owned(),
+                source: Box::new(e),
+            })?;
         }
         wait_services_resolved(&device).await?;
 
         let characteristic_path = find_characteristic(&object_manager, &device_path, DATA_OUT_UUID)
             .await?
-            .ok_or_else(|| {
-                anyhow!("Characteristic {DATA_OUT_UUID} not found on {address}; is this a UT325F?")
+            .ok_or_else(|| Error::CharacteristicNotFound {
+                uuid: DATA_OUT_UUID.to_owned(),
+                address: address.to_owned(),
             })?;
 
         // Subscribe to property changes before enabling notifications so
@@ -82,10 +79,7 @@ impl BluebusTransport {
             .path(characteristic_path)?
             .build()
             .await?;
-        characteristic
-            .start_notify()
-            .await
-            .context("Failed to enable notifications")?;
+        characteristic.start_notify().await?;
 
         Ok(Self { signals })
     }
@@ -97,9 +91,7 @@ impl BluebusTransport {
     /// Scans on every powered adapter; a scan already started by
     /// another Bluetooth client is reused.
     pub async fn discover(timeout: Duration) -> Result<Vec<DiscoveredMeter>> {
-        let connection = ::bluebus::get_system_connection()
-            .await
-            .context("Failed to connect to system D-Bus")?;
+        let connection = ::bluebus::get_system_connection().await?;
         Self::discover_on(&connection, timeout).await
     }
 
@@ -107,9 +99,7 @@ impl BluebusTransport {
     /// found; errors if there are none or more than one (opening an
     /// arbitrary meter could pick the wrong one).
     pub async fn open_only(timeout: Duration) -> Result<Self> {
-        let connection = ::bluebus::get_system_connection()
-            .await
-            .context("Failed to connect to system D-Bus")?;
+        let connection = ::bluebus::get_system_connection().await?;
         Self::open_only_on(&connection, timeout).await
     }
 
@@ -150,14 +140,16 @@ impl BluebusTransport {
                 Ok(()) => true,
                 Err(e) if e.to_string().contains("InProgress") => false,
                 Err(e) => {
-                    return Err(anyhow!(e))
-                        .with_context(|| format!("Failed to start discovery on {path}"));
+                    return Err(Error::AdapterUnusable {
+                        adapter: path.to_string(),
+                        source: Box::new(e),
+                    });
                 }
             };
             adapters.push((adapter, we_started));
         }
         if adapters.is_empty() {
-            return Err(anyhow!("No powered Bluetooth adapter found"));
+            return Err(Error::NoUsableAdapter);
         }
 
         tokio::time::sleep(timeout).await;
@@ -205,7 +197,7 @@ impl Transport for BluebusTransport {
                 .signals
                 .next()
                 .await
-                .ok_or_else(|| anyhow!("BLE notification stream ended"))?;
+                .ok_or(Error::Disconnected("notification stream ended"))?;
             let args = signal.args()?;
             if args.interface_name.as_str() != GATT_CHARACTERISTIC_IFACE {
                 continue;
@@ -275,6 +267,6 @@ async fn wait_services_resolved(device: &::bluebus::DeviceProxy<'_>) -> Result<(
         }
     })
     .await
-    .map_err(|_| anyhow!("Timeout waiting for GATT service discovery"))?;
+    .map_err(|_| Error::ConnectTimeout("GATT service discovery".to_owned()))?;
     Ok(())
 }

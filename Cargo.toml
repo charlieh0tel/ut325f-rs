@@ -23,6 +23,7 @@ btleplug = { version = "0.12", optional = true }
 clap = "4.5.36"
 clap_derive = "4.5.32"
 futures = { version = "0.3.31", optional = true }
+thiserror = "2"
 tokio = { version = "1.44.2", features = ["full"]}
 tokio-serial = { version = "5.4.5", optional = true }
 uuid = { version = "1", optional = true }

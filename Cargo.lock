@@ -1440,6 +1440,7 @@ dependencies = [
  "clap",
  "clap_derive",
  "futures",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-serial",
  "uuid",

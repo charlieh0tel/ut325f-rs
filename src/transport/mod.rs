@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::Result;
 
 #[cfg(feature = "bluebus")]
 mod bluebus;
@@ -49,21 +49,14 @@ fn finalize_discovered(mut meters: Vec<DiscoveredMeter>) -> Vec<DiscoveredMeter>
 }
 
 #[cfg(any(feature = "bluebus", feature = "btleplug"))]
-fn exactly_one(meters: Vec<DiscoveredMeter>) -> anyhow::Result<DiscoveredMeter> {
-    use anyhow::anyhow;
-    let mut meters = meters.into_iter();
-    let Some(meter) = meters.next() else {
-        return Err(anyhow!("No UT325F meters found"));
-    };
-    let extras: Vec<_> = meters.map(|m| m.address).collect();
-    if !extras.is_empty() {
-        return Err(anyhow!(
-            "Multiple UT325F meters found ({}, {}); open one by address",
-            meter.address,
-            extras.join(", ")
-        ));
+fn exactly_one(mut meters: Vec<DiscoveredMeter>) -> Result<DiscoveredMeter> {
+    match meters.len() {
+        0 => Err(crate::error::Error::NoMetersFound),
+        1 => Ok(meters.remove(0)),
+        _ => Err(crate::error::Error::MultipleMetersFound(
+            meters.into_iter().map(|m| m.address).collect(),
+        )),
     }
-    Ok(meter)
 }
 
 /// The Bluetooth LE transport backend selected by feature flags. When

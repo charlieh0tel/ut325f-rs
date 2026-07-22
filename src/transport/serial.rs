@@ -1,9 +1,9 @@
-use anyhow::{Result, anyhow};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
 use super::Transport;
+use crate::error::{Error, Result};
 
 /// Transport over the meter's USB serial interface.
 pub struct SerialTransport {
@@ -19,9 +19,10 @@ impl SerialTransport {
             .flow_control(tokio_serial::FlowControl::None)
             .timeout(Duration::from_secs(1));
 
-        let serial = builder
-            .open_native_async()
-            .map_err(|e| anyhow!("Failed to open serial port '{}': {}", port, e))?;
+        let serial = builder.open_native_async().map_err(|e| Error::SerialOpen {
+            port: port.to_owned(),
+            source: e,
+        })?;
         Ok(Self { serial })
     }
 }
@@ -31,7 +32,7 @@ impl Transport for SerialTransport {
         let mut buf = vec![0u8; 256];
         let n = self.serial.read(&mut buf).await?;
         if n == 0 {
-            return Err(anyhow!("Serial port closed"));
+            return Err(Error::Disconnected("serial port closed"));
         }
         buf.truncate(n);
         Ok(buf)
