@@ -10,6 +10,8 @@ use uuid::Uuid;
 use super::{DATA_OUT_UUID, DiscoveredMeter, METER_NAME_PREFIX, Transport, finalize_discovered};
 use crate::error::{Error, Result};
 
+const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Transport over Bluetooth LE using the `btleplug` crate.
 ///
 /// The device must already be known to the platform's Bluetooth stack
@@ -27,20 +29,42 @@ impl BtleplugTransport {
     /// Connects to the meter with the given Bluetooth address
     /// (e.g. "E8:26:CF:F1:23:61") and starts notifications.
     pub async fn open(address: &str) -> Result<Self> {
+        tokio::time::timeout(OPEN_TIMEOUT, Self::open_inner(address))
+            .await
+            .map_err(|_| Error::ConnectTimeout(address.to_owned()))?
+    }
+
+    async fn open_inner(address: &str) -> Result<Self> {
         let target: BDAddr = address
             .parse()
             .map_err(|_| Error::InvalidAddress(address.to_owned()))?;
 
+        // Search every adapter, tolerating per-adapter enumeration
+        // failures as long as the target is found somewhere.
         let mut peripheral = None;
+        let mut enumeration_error = None;
         'adapters: for adapter in &all_adapters().await? {
-            for candidate in adapter.peripherals().await? {
+            let candidates = match adapter.peripherals().await {
+                Ok(candidates) => candidates,
+                Err(e) => {
+                    enumeration_error = Some(e);
+                    continue;
+                }
+            };
+            for candidate in candidates {
                 if candidate.address() == target {
                     peripheral = Some(candidate);
                     break 'adapters;
                 }
             }
         }
-        let peripheral = peripheral.ok_or_else(|| Error::DeviceNotKnown(address.to_owned()))?;
+        let peripheral = peripheral.ok_or_else(|| match enumeration_error {
+            Some(source) => Error::DeviceSearchIncomplete {
+                address: address.to_owned(),
+                source,
+            },
+            None => Error::DeviceNotKnown(address.to_owned()),
+        })?;
 
         if !peripheral.is_connected().await? {
             peripheral
@@ -93,15 +117,19 @@ impl BtleplugTransport {
     pub async fn discover(timeout: Duration) -> Result<Vec<DiscoveredMeter>> {
         let adapters = all_adapters().await?;
 
-        let mut scanning = Vec::new();
+        // The guard stops the scans we started, including on error and
+        // cancellation paths.
+        let mut guard = ScanGuard {
+            adapters: Vec::new(),
+        };
         let mut last_error = None;
         for adapter in &adapters {
             match adapter.start_scan(ScanFilter::default()).await {
-                Ok(()) => scanning.push(adapter),
+                Ok(()) => guard.adapters.push(adapter.clone()),
                 Err(e) => last_error = Some(e),
             }
         }
-        if scanning.is_empty() {
+        if guard.adapters.is_empty() {
             return Err(Error::Btleplug(
                 last_error.expect("all_adapters returns at least one adapter"),
             ));
@@ -110,16 +138,16 @@ impl BtleplugTransport {
         tokio::time::sleep(timeout).await;
 
         let mut meters = Vec::new();
-        let mut result = Ok(());
-        'adapters: for adapter in &adapters {
-            for peripheral in match adapter.peripherals().await {
-                Ok(peripherals) => peripherals,
-                Err(e) => {
-                    result = Err(e);
-                    break 'adapters;
+        for adapter in &adapters {
+            for peripheral in adapter.peripherals().await? {
+                // A device whose properties cannot be read the first
+                // time gets one retry before being skipped, so a
+                // transient fault does not silently hide a meter.
+                let mut properties = peripheral.properties().await;
+                if properties.is_err() {
+                    properties = peripheral.properties().await;
                 }
-            } {
-                let Ok(Some(properties)) = peripheral.properties().await else {
+                let Ok(Some(properties)) = properties else {
                     continue;
                 };
                 let Some(name) = properties.local_name else {
@@ -135,10 +163,7 @@ impl BtleplugTransport {
                 });
             }
         }
-        for adapter in &scanning {
-            let _ = adapter.stop_scan().await;
-        }
-        result?;
+        drop(guard);
         Ok(finalize_discovered(meters))
     }
 }
@@ -163,6 +188,25 @@ impl Transport for BtleplugTransport {
             if notification.uuid == self.data_out_uuid {
                 return Ok(notification.value);
             }
+        }
+    }
+}
+
+/// Stops the scans a discovery started, including on error and
+/// cancellation paths.
+struct ScanGuard {
+    adapters: Vec<Adapter>,
+}
+
+impl Drop for ScanGuard {
+    fn drop(&mut self) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        for adapter in self.adapters.drain(..) {
+            handle.spawn(async move {
+                let _ = adapter.stop_scan().await;
+            });
         }
     }
 }
