@@ -27,17 +27,23 @@ struct Args {
         long,
         value_name = "ADDRESS",
         num_args = 0..=1,
-        conflicts_with = "discover"
+        conflicts_with = "discover",
+        group = "bluetooth"
     )]
     ble: Option<Option<String>>,
 
     /// Discover meters over Bluetooth LE, print them, and exit
-    #[clap(short, long, action)]
+    #[clap(short, long, action, group = "bluetooth")]
     discover: bool,
 
     /// Bluetooth scan duration in seconds, for --discover and --ble
     /// without an address
-    #[clap(long, default_value_t = 8, value_name = "SECONDS")]
+    #[clap(
+        long,
+        default_value_t = 8,
+        value_name = "SECONDS",
+        requires = "bluetooth"
+    )]
     scan_time: u64,
 
     /// Print the held temperatures as well.
