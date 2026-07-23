@@ -54,10 +54,15 @@ struct Args {
 async fn run<T: Transport>(mut meter: Meter<T>, held_temps: bool) -> Result<()> {
     let mut stdout = std::io::stdout().lock();
     loop {
-        let reading = meter
-            .read()
-            .await
-            .map_err(|e| anyhow!("Error reading data: {}", e))?;
+        // Exit cleanly on Ctrl-C instead of dying by signal, so the
+        // meter's transport is dropped and disconnects the BLE device.
+        let reading = tokio::select! {
+            reading = meter.read() => reading,
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+        }
+        .map_err(|e| anyhow!("Error reading data: {}", e))?;
         let written = if held_temps {
             reading.write_all_temps(&mut stdout)
         } else {
@@ -67,10 +72,15 @@ async fn run<T: Transport>(mut meter: Meter<T>, held_temps: bool) -> Result<()> 
             Ok(()) => {}
             // Reading stops when the consumer goes away (e.g. piped to
             // head).
-            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => break,
             Err(e) => return Err(e.into()),
         }
     }
+    // Give the transport's disconnect, spawned by its Drop, a moment to
+    // reach the Bluetooth stack before the runtime shuts down.
+    drop(meter);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    Ok(())
 }
 
 #[cfg(any(feature = "bluebus", feature = "btleplug"))]
@@ -80,10 +90,14 @@ async fn discover(scan_time: std::time::Duration) -> Result<()> {
         eprintln!("No meters found.");
     }
     for meter in &meters {
-        let rssi = meter
-            .rssi
-            .map_or_else(|| "cached".to_owned(), |rssi| format!("{rssi} dBm"));
-        println!("{}  {}  [{}]", meter.address, meter.name, rssi);
+        let status = if meter.connected {
+            "connected".to_owned()
+        } else {
+            meter
+                .rssi
+                .map_or_else(|| "cached".to_owned(), |rssi| format!("{rssi} dBm"))
+        };
+        println!("{}  {}  [{}]", meter.address, meter.name, status);
     }
     Ok(())
 }

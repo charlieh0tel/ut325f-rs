@@ -13,10 +13,14 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("No meters found.");
     }
     for meter in &meters {
-        let rssi = meter
-            .rssi
-            .map_or_else(|| "cached".to_owned(), |rssi| format!("{rssi} dBm"));
-        println!("{}  {}  [{}]", meter.address, meter.name, rssi);
+        let status = if meter.connected {
+            "connected".to_owned()
+        } else {
+            meter
+                .rssi
+                .map_or_else(|| "cached".to_owned(), |rssi| format!("{rssi} dBm"))
+        };
+        println!("{}  {}  [{}]", meter.address, meter.name, status);
     }
     Ok(())
 }

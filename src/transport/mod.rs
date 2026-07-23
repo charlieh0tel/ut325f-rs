@@ -34,8 +34,12 @@ pub struct DiscoveredMeter {
     pub name: String,
     /// Signal strength if the device was seen during the scan; `None`
     /// for devices only known from the stack's cache (e.g. paired but
-    /// currently out of range or powered off).
+    /// currently out of range or powered off). Connected devices do not
+    /// advertise, so they also report `None`.
     pub rssi: Option<i16>,
+    /// True if this host currently holds a BLE connection to the meter.
+    /// Such a meter is present even though it is invisible to scans.
+    pub connected: bool,
 }
 
 /// Sorts strongest signal first (unseen devices last), keeping only the
@@ -63,6 +67,7 @@ mod tests {
             address: address.to_owned(),
             name: format!("UT325F {address}"),
             rssi,
+            connected: false,
         }
     }
 

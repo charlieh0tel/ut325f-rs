@@ -15,9 +15,9 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Transport over Bluetooth LE using the BlueZ D-Bus API via `bluebus`.
 ///
 /// The device must already be known to BlueZ (i.e. paired or previously
-/// discovered). While the transport is alive it holds the GATT
-/// notification session; the meter drops the BLE connection when no
-/// client holds it.
+/// discovered). If the transport initiated the BLE connection, dropping
+/// it disconnects the device; a connected meter stops advertising, so a
+/// leaked connection would hide it from every later scan.
 pub struct BluebusTransport {
     signals: PropertiesChangedStream,
     // The notification session lives on its own D-Bus connection. BlueZ
@@ -26,6 +26,10 @@ pub struct BluebusTransport {
     // every path (timeout, cancellation, any thread) without racing
     // other transports that share the caller's connection.
     _notify_connection: zbus::Connection,
+    // Unlike notify sessions, BlueZ device connections are adapter-level
+    // state that no client teardown cleans up; this guard disconnects on
+    // drop, and only if we initiated the connection.
+    _device: DisconnectGuard,
 }
 
 impl BluebusTransport {
@@ -57,11 +61,16 @@ impl BluebusTransport {
             .path(device_path.clone())?
             .build()
             .await?;
+        // The guard covers cancellation for the rest of open (e.g. the
+        // open timeout firing) and then rides in the transport; it only
+        // disconnects a connection this call established.
+        let mut device_guard = DisconnectGuard(None);
         if !device.connected().await? {
             device.connect().await.map_err(|e| Error::ConnectFailed {
                 address: address.to_owned(),
                 source: Box::new(e),
             })?;
+            device_guard.0 = Some(device.clone());
         }
         wait_services_resolved(&device).await?;
 
@@ -93,6 +102,7 @@ impl BluebusTransport {
         Ok(Self {
             signals,
             _notify_connection: notify_connection,
+            _device: device_guard,
         })
     }
 
@@ -196,10 +206,15 @@ impl BluebusTransport {
             let rssi = properties
                 .get("RSSI")
                 .and_then(|v| v.downcast_ref::<i16>().ok());
+            let connected = properties
+                .get("Connected")
+                .and_then(|v| v.downcast_ref::<bool>().ok())
+                .unwrap_or(false);
             meters.push(DiscoveredMeter {
                 address: address.to_owned(),
                 name: name.to_owned(),
                 rssi,
+                connected,
             });
         }
         Ok(finalize_discovered(meters))
@@ -237,6 +252,25 @@ impl Transport for BluebusTransport {
                 return Ok(value.try_clone()?.try_into()?);
             }
         }
+    }
+}
+
+/// Disconnects the held device on drop. Holds `None` when the
+/// connection was not ours to manage (already connected by another
+/// client).
+struct DisconnectGuard(Option<::bluebus::DeviceProxy<'static>>);
+
+impl Drop for DisconnectGuard {
+    fn drop(&mut self) {
+        let Some(device) = self.0.take() else {
+            return;
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        handle.spawn(async move {
+            let _ = device.disconnect().await;
+        });
     }
 }
 

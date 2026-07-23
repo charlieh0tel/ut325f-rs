@@ -15,12 +15,14 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Transport over Bluetooth LE using the `btleplug` crate.
 ///
 /// The device must already be known to the platform's Bluetooth stack
-/// (i.e. paired or previously discovered). While the transport is alive
-/// it holds the GATT notification session; the meter drops the BLE
-/// connection when no client holds it.
+/// (i.e. paired or previously discovered). If the transport initiated
+/// the BLE connection, dropping it disconnects the device; a connected
+/// meter stops advertising, so a leaked connection would hide it from
+/// every later scan.
 pub struct BtleplugTransport {
-    // Held to keep the connection and subscription alive.
-    _peripheral: Peripheral,
+    // Held to keep the connection and subscription alive; the guard
+    // disconnects on drop, and only if we initiated the connection.
+    _peripheral: DisconnectGuard,
     notifications: Pin<Box<dyn Stream<Item = ValueNotification> + Send>>,
     data_out_uuid: Uuid,
 }
@@ -66,6 +68,13 @@ impl BtleplugTransport {
             None => Error::DeviceNotKnown(address.to_owned()),
         })?;
 
+        // The guard covers cancellation for the rest of open (e.g. the
+        // open timeout firing) and then rides in the transport; it only
+        // disconnects a connection this call established.
+        let mut peripheral = DisconnectGuard {
+            peripheral,
+            initiated: false,
+        };
         if !peripheral.is_connected().await? {
             peripheral
                 .connect()
@@ -74,6 +83,7 @@ impl BtleplugTransport {
                     address: address.to_owned(),
                     source: Box::new(e),
                 })?;
+            peripheral.initiated = true;
         }
         peripheral.discover_services().await?;
 
@@ -166,10 +176,12 @@ impl BtleplugTransport {
                 if !name.starts_with(METER_NAME_PREFIX) {
                     continue;
                 }
+                let connected = peripheral.is_connected().await.unwrap_or(false);
                 meters.push(DiscoveredMeter {
                     address: properties.address.to_string(),
                     name,
                     rssi: properties.rssi,
+                    connected,
                 });
             }
         }
@@ -185,6 +197,36 @@ impl BtleplugTransport {
             return Err(Error::Btleplug(e));
         }
         Ok(finalize_discovered(meters))
+    }
+}
+
+/// Holds the peripheral for the transport's lifetime and disconnects it
+/// on drop if this transport initiated the connection.
+struct DisconnectGuard {
+    peripheral: Peripheral,
+    initiated: bool,
+}
+
+impl std::ops::Deref for DisconnectGuard {
+    type Target = Peripheral;
+
+    fn deref(&self) -> &Peripheral {
+        &self.peripheral
+    }
+}
+
+impl Drop for DisconnectGuard {
+    fn drop(&mut self) {
+        if !self.initiated {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let peripheral = self.peripheral.clone();
+        handle.spawn(async move {
+            let _ = peripheral.disconnect().await;
+        });
     }
 }
 
