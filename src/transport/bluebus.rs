@@ -253,11 +253,30 @@ impl Transport for BluebusTransport {
             }
         }
     }
+
+    async fn close(self) -> Result<()> {
+        let Self {
+            signals,
+            _notify_connection: notify_connection,
+            _device: mut guard,
+        } = self;
+        // End the notification stream while its connection is still
+        // fully up, then disconnect before closing the connection.
+        drop(signals);
+        let device = guard.0.take();
+        drop(guard);
+        if let Some(device) = device {
+            device.disconnect().await?;
+        }
+        notify_connection.graceful_shutdown().await;
+        Ok(())
+    }
 }
 
 /// Disconnects the held device on drop. Holds `None` when the
 /// connection was not ours to manage (already connected by another
-/// client).
+/// client). Best-effort only: the spawned disconnect does not survive
+/// runtime shutdown, so graceful teardown must go through `close`.
 struct DisconnectGuard(Option<::bluebus::DeviceProxy<'static>>);
 
 impl Drop for DisconnectGuard {

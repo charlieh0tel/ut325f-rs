@@ -121,4 +121,15 @@ pub type BleTransport = BtleplugTransport;
 pub trait Transport {
     /// Receives the next non-empty chunk of bytes from the meter.
     fn recv(&mut self) -> impl Future<Output = Result<Vec<u8>>> + Send;
+
+    /// Gracefully shuts the transport down, releasing what it holds
+    /// (e.g. disconnecting a BLE device it connected). Prefer this over
+    /// dropping at the end of a session: cleanup spawned from drop does
+    /// not survive runtime shutdown at process exit.
+    fn close(self) -> impl Future<Output = Result<()>> + Send
+    where
+        Self: Sized,
+    {
+        async { Ok(()) }
+    }
 }

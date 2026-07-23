@@ -201,7 +201,9 @@ impl BtleplugTransport {
 }
 
 /// Holds the peripheral for the transport's lifetime and disconnects it
-/// on drop if this transport initiated the connection.
+/// on drop if this transport initiated the connection. Best-effort
+/// only: the spawned disconnect does not survive runtime shutdown, so
+/// graceful teardown must go through `close`.
 struct DisconnectGuard {
     peripheral: Peripheral,
     initiated: bool,
@@ -251,6 +253,26 @@ impl Transport for BtleplugTransport {
                 return Ok(notification.value);
             }
         }
+    }
+
+    async fn close(self) -> Result<()> {
+        let Self {
+            _peripheral: mut guard,
+            notifications,
+            ..
+        } = self;
+        // End the notification stream while its connection is still
+        // fully up; tearing them down together can panic inside
+        // bluez-async's RemoveMatch handling.
+        drop(notifications);
+        let peripheral = guard.peripheral.clone();
+        let initiated = guard.initiated;
+        guard.initiated = false;
+        drop(guard);
+        if initiated {
+            peripheral.disconnect().await?;
+        }
+        Ok(())
     }
 }
 

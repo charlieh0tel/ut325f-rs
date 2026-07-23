@@ -76,10 +76,7 @@ async fn run<T: Transport>(mut meter: Meter<T>, held_temps: bool) -> Result<()> 
             Err(e) => return Err(e.into()),
         }
     }
-    // Give the transport's disconnect, spawned by its Drop, a moment to
-    // reach the Bluetooth stack before the runtime shuts down.
-    drop(meter);
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    meter.close().await?;
     Ok(())
 }
 

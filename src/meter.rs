@@ -35,6 +35,14 @@ impl<T: Transport> Meter<T> {
             .map_err(|_| Error::ReadTimeout)?
     }
 
+    /// Gracefully shuts down the transport (e.g. disconnecting a BLE
+    /// device it connected). Prefer this over dropping at the end of a
+    /// session: cleanup spawned from drop does not survive runtime
+    /// shutdown at process exit.
+    pub async fn close(self) -> Result<()> {
+        self.transport.close().await
+    }
+
     async fn read_frame(&mut self) -> Result<Reading> {
         loop {
             // The decoder yields only checksum-valid frames; parse can
