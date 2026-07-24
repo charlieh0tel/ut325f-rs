@@ -132,4 +132,18 @@ pub trait Transport {
     {
         async { Ok(()) }
     }
+
+    /// Releases the meter, leaving its connection with the Bluetooth
+    /// stack (a connected meter stays awake and needs no rediscovery).
+    /// Ends the notification stream cleanly, like
+    /// [`close`](Transport::close), but never disconnects — not even a
+    /// connection this transport initiated. A transport that reopens a
+    /// detached meter did not initiate its connection, so a later
+    /// `close` will not disconnect it either.
+    fn detach(self) -> impl Future<Output = Result<()>> + Send
+    where
+        Self: Sized,
+    {
+        async { Ok(()) }
+    }
 }

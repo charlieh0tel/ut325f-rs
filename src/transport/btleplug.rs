@@ -117,6 +117,39 @@ impl BtleplugTransport {
         Self::open(&meter.address).await
     }
 
+    /// Ends the subscription and the notification stream without
+    /// touching the connection, and disarms the drop guard. Returns
+    /// the peripheral and whether this transport connected it.
+    ///
+    /// Ordering matters: the meter notifies at ~3 Hz, and a signal
+    /// landing between the stream's drop and its deferred RemoveMatch
+    /// makes dbus remove the match early, after which bluez-async's
+    /// RemoveMatch task panics on unwrap ("No match with that id
+    /// found"). Unsubscribe quiets the device while the stream is
+    /// alive; the yield lets RemoveMatch claim its match before
+    /// anything (e.g. close's disconnect) emits new signals.
+    async fn end_notifications(self) -> (Peripheral, bool) {
+        let Self {
+            _peripheral: mut guard,
+            notifications,
+            data_out_uuid,
+        } = self;
+        let peripheral = guard.peripheral.clone();
+        let initiated = guard.initiated;
+        guard.initiated = false;
+        drop(guard);
+        if let Some(characteristic) = peripheral
+            .characteristics()
+            .into_iter()
+            .find(|c| c.uuid == data_out_uuid)
+        {
+            let _ = peripheral.unsubscribe(&characteristic).await;
+        }
+        drop(notifications);
+        tokio::task::yield_now().await;
+        (peripheral, initiated)
+    }
+
     /// Scans for `timeout` and returns the UT325F meters known to the
     /// Bluetooth stack, strongest signal first. Devices with
     /// `rssi: None` come from the stack's cache (e.g. paired meters
@@ -258,28 +291,15 @@ impl Transport for BtleplugTransport {
     }
 
     async fn close(self) -> Result<()> {
-        let Self {
-            _peripheral: mut guard,
-            notifications,
-            ..
-        } = self;
-        let peripheral = guard.peripheral.clone();
-        let initiated = guard.initiated;
-        guard.initiated = false;
-        drop(guard);
-        // Disconnect while the notification stream is still alive. The
-        // disconnect emits PropertiesChanged signals for this device;
-        // if one arrives after the stream's receiver is gone but
-        // before its deferred RemoveMatch runs, dbus removes the match
-        // early and bluez-async's RemoveMatch task panics on unwrap
-        // ("No match with that id found").
+        let (peripheral, initiated) = self.end_notifications().await;
         if initiated {
             peripheral.disconnect().await?;
         }
-        drop(notifications);
-        // Start the RemoveMatch task the drop above spawned while the
-        // device is quiet.
-        tokio::task::yield_now().await;
+        Ok(())
+    }
+
+    async fn detach(self) -> Result<()> {
+        self.end_notifications().await;
         Ok(())
     }
 }

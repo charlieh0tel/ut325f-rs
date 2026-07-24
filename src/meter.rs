@@ -43,6 +43,17 @@ impl<T: Transport> Meter<T> {
         self.transport.close().await
     }
 
+    /// Releases the meter, leaving its connection with the Bluetooth
+    /// stack (a connected meter stays awake and needs no rediscovery).
+    /// Ends the notification stream cleanly, like
+    /// [`close`](Self::close), but never disconnects — not even a
+    /// connection this transport initiated. A meter reopened after
+    /// detach was not connected by the new transport, so a later
+    /// `close` will not disconnect it either.
+    pub async fn detach(self) -> Result<()> {
+        self.transport.detach().await
+    }
+
     async fn read_frame(&mut self) -> Result<Reading> {
         loop {
             // The decoder yields only checksum-valid frames; parse can

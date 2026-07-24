@@ -234,6 +234,23 @@ impl BluebusTransport {
         let meter = super::exactly_one(Self::discover_on(connection, timeout).await?)?;
         Self::open_on(connection, &meter.address).await
     }
+
+    /// Ends the notification session (by closing its dedicated D-Bus
+    /// connection, which drops the session and match rules server-side)
+    /// without touching the device connection, and disarms the drop
+    /// guard. Returns the device proxy if this transport connected it.
+    async fn end_notifications(self) -> Option<::bluebus::DeviceProxy<'static>> {
+        let Self {
+            signals,
+            _notify_connection: notify_connection,
+            _device: mut guard,
+        } = self;
+        let device = guard.0.take();
+        drop(guard);
+        drop(signals);
+        notify_connection.graceful_shutdown().await;
+        device
+    }
 }
 
 impl Transport for BluebusTransport {
@@ -255,21 +272,15 @@ impl Transport for BluebusTransport {
     }
 
     async fn close(self) -> Result<()> {
-        let Self {
-            signals,
-            _notify_connection: notify_connection,
-            _device: mut guard,
-        } = self;
-        let device = guard.0.take();
-        drop(guard);
-        // Disconnect while the notification stream is still alive to
-        // absorb the PropertiesChanged signals the disconnect emits,
-        // then tear the stream and its connection down.
+        let device = self.end_notifications().await;
         if let Some(device) = device {
             device.disconnect().await?;
         }
-        drop(signals);
-        notify_connection.graceful_shutdown().await;
+        Ok(())
+    }
+
+    async fn detach(self) -> Result<()> {
+        self.end_notifications().await;
         Ok(())
     }
 }
