@@ -123,9 +123,10 @@ pub trait Transport {
     fn recv(&mut self) -> impl Future<Output = Result<Vec<u8>>> + Send;
 
     /// Gracefully shuts the transport down, releasing what it holds
-    /// (e.g. disconnecting a BLE device it connected). Prefer this over
-    /// dropping at the end of a session: cleanup spawned from drop does
-    /// not survive runtime shutdown at process exit.
+    /// (e.g. disconnecting a BLE device). Prefer this over dropping at
+    /// the end of a session: cleanup spawned from drop does not survive
+    /// runtime shutdown at process exit, and drop never releases a
+    /// connection this transport did not initiate.
     fn close(self) -> impl Future<Output = Result<()>> + Send
     where
         Self: Sized,
@@ -137,9 +138,7 @@ pub trait Transport {
     /// stack (a connected meter stays awake and needs no rediscovery).
     /// Ends the notification stream cleanly, like
     /// [`close`](Transport::close), but never disconnects — not even a
-    /// connection this transport initiated. A transport that reopens a
-    /// detached meter did not initiate its connection, so a later
-    /// `close` will not disconnect it either.
+    /// connection this transport initiated.
     fn detach(self) -> impl Future<Output = Result<()>> + Send
     where
         Self: Sized,

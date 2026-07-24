@@ -119,7 +119,7 @@ impl BtleplugTransport {
 
     /// Ends the subscription and the notification stream without
     /// touching the connection, and disarms the drop guard. Returns
-    /// the peripheral and whether this transport connected it.
+    /// the peripheral.
     ///
     /// Ordering matters: the meter notifies at ~3 Hz, and a signal
     /// landing between the stream's drop and its deferred RemoveMatch
@@ -128,14 +128,13 @@ impl BtleplugTransport {
     /// found"). Unsubscribe quiets the device while the stream is
     /// alive; the yield lets RemoveMatch claim its match before
     /// anything (e.g. close's disconnect) emits new signals.
-    async fn end_notifications(self) -> (Peripheral, bool) {
+    async fn end_notifications(self) -> Peripheral {
         let Self {
             _peripheral: mut guard,
             notifications,
             data_out_uuid,
         } = self;
         let peripheral = guard.peripheral.clone();
-        let initiated = guard.initiated;
         guard.initiated = false;
         drop(guard);
         if let Some(characteristic) = peripheral
@@ -147,7 +146,7 @@ impl BtleplugTransport {
         }
         drop(notifications);
         tokio::task::yield_now().await;
-        (peripheral, initiated)
+        peripheral
     }
 
     /// Scans for `timeout` and returns the UT325F meters known to the
@@ -291,8 +290,8 @@ impl Transport for BtleplugTransport {
     }
 
     async fn close(self) -> Result<()> {
-        let (peripheral, initiated) = self.end_notifications().await;
-        if initiated {
+        let peripheral = self.end_notifications().await;
+        if peripheral.is_connected().await? {
             peripheral.disconnect().await?;
         }
         Ok(())

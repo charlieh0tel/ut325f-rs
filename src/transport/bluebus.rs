@@ -15,9 +15,11 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Transport over Bluetooth LE using the BlueZ D-Bus API via `bluebus`.
 ///
 /// The device must already be known to BlueZ (i.e. paired or previously
-/// discovered). If the transport initiated the BLE connection, dropping
-/// it disconnects the device; a connected meter stops advertising, so a
-/// leaked connection would hide it from every later scan.
+/// discovered). Teardown: `close` disconnects the device, `detach`
+/// deliberately leaves it connected (and awake), and drop makes a
+/// best-effort disconnect of a connection this transport initiated.
+/// A connected meter stops advertising, so a leaked connection would
+/// hide it from every later scan.
 pub struct BluebusTransport {
     signals: PropertiesChangedStream,
     // The notification session lives on its own D-Bus connection. BlueZ
@@ -62,15 +64,18 @@ impl BluebusTransport {
             .build()
             .await?;
         // The guard covers cancellation for the rest of open (e.g. the
-        // open timeout firing) and then rides in the transport; it only
-        // disconnects a connection this call established.
-        let mut device_guard = DisconnectGuard(None);
+        // open timeout firing) and then rides in the transport; on drop
+        // it only disconnects a connection this call established.
+        let mut device_guard = DisconnectGuard {
+            device: device.clone(),
+            initiated: false,
+        };
         if !device.connected().await? {
             device.connect().await.map_err(|e| Error::ConnectFailed {
                 address: address.to_owned(),
                 source: Box::new(e),
             })?;
-            device_guard.0 = Some(device.clone());
+            device_guard.initiated = true;
         }
         wait_services_resolved(&device).await?;
 
@@ -238,14 +243,15 @@ impl BluebusTransport {
     /// Ends the notification session (by closing its dedicated D-Bus
     /// connection, which drops the session and match rules server-side)
     /// without touching the device connection, and disarms the drop
-    /// guard. Returns the device proxy if this transport connected it.
-    async fn end_notifications(self) -> Option<::bluebus::DeviceProxy<'static>> {
+    /// guard. Returns the device proxy.
+    async fn end_notifications(self) -> ::bluebus::DeviceProxy<'static> {
         let Self {
             signals,
             _notify_connection: notify_connection,
             _device: mut guard,
         } = self;
-        let device = guard.0.take();
+        let device = guard.device.clone();
+        guard.initiated = false;
         drop(guard);
         drop(signals);
         notify_connection.graceful_shutdown().await;
@@ -273,7 +279,7 @@ impl Transport for BluebusTransport {
 
     async fn close(self) -> Result<()> {
         let device = self.end_notifications().await;
-        if let Some(device) = device {
+        if device.connected().await? {
             device.disconnect().await?;
         }
         Ok(())
@@ -285,20 +291,26 @@ impl Transport for BluebusTransport {
     }
 }
 
-/// Disconnects the held device on drop. Holds `None` when the
-/// connection was not ours to manage (already connected by another
-/// client). Best-effort only: the spawned disconnect does not survive
-/// runtime shutdown, so graceful teardown must go through `close`.
-struct DisconnectGuard(Option<::bluebus::DeviceProxy<'static>>);
+/// Holds the device proxy for the transport's lifetime and, on drop,
+/// disconnects only a connection this transport initiated (drop
+/// expresses no intent, so it must not release a connection another
+/// client established). Best-effort only: the spawned disconnect does
+/// not survive runtime shutdown, so graceful teardown must go through
+/// `close` or `detach`.
+struct DisconnectGuard {
+    device: ::bluebus::DeviceProxy<'static>,
+    initiated: bool,
+}
 
 impl Drop for DisconnectGuard {
     fn drop(&mut self) {
-        let Some(device) = self.0.take() else {
+        if !self.initiated {
             return;
-        };
+        }
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
+        let device = self.device.clone();
         handle.spawn(async move {
             let _ = device.disconnect().await;
         });

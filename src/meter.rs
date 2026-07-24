@@ -35,10 +35,11 @@ impl<T: Transport> Meter<T> {
             .map_err(|_| Error::ReadTimeout)?
     }
 
-    /// Gracefully shuts down the transport (e.g. disconnecting a BLE
-    /// device it connected). Prefer this over dropping at the end of a
-    /// session: cleanup spawned from drop does not survive runtime
-    /// shutdown at process exit.
+    /// Gracefully shuts down the transport, disconnecting a BLE
+    /// device. Prefer this over dropping at the end of a session:
+    /// cleanup spawned from drop does not survive runtime shutdown at
+    /// process exit, and drop never releases a connection this
+    /// transport did not initiate.
     pub async fn close(self) -> Result<()> {
         self.transport.close().await
     }
@@ -47,9 +48,7 @@ impl<T: Transport> Meter<T> {
     /// stack (a connected meter stays awake and needs no rediscovery).
     /// Ends the notification stream cleanly, like
     /// [`close`](Self::close), but never disconnects — not even a
-    /// connection this transport initiated. A meter reopened after
-    /// detach was not connected by the new transport, so a later
-    /// `close` will not disconnect it either.
+    /// connection this transport initiated.
     pub async fn detach(self) -> Result<()> {
         self.transport.detach().await
     }
