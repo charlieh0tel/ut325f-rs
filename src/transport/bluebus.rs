@@ -260,14 +260,15 @@ impl Transport for BluebusTransport {
             _notify_connection: notify_connection,
             _device: mut guard,
         } = self;
-        // End the notification stream while its connection is still
-        // fully up, then disconnect before closing the connection.
-        drop(signals);
         let device = guard.0.take();
         drop(guard);
+        // Disconnect while the notification stream is still alive to
+        // absorb the PropertiesChanged signals the disconnect emits,
+        // then tear the stream and its connection down.
         if let Some(device) = device {
             device.disconnect().await?;
         }
+        drop(signals);
         notify_connection.graceful_shutdown().await;
         Ok(())
     }

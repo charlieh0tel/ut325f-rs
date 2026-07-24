@@ -202,8 +202,10 @@ impl BtleplugTransport {
 
 /// Holds the peripheral for the transport's lifetime and disconnects it
 /// on drop if this transport initiated the connection. Best-effort
-/// only: the spawned disconnect does not survive runtime shutdown, so
-/// graceful teardown must go through `close`.
+/// only: the spawned disconnect does not survive runtime shutdown, and
+/// the disconnect's own signals can trip bluez-async's RemoveMatch
+/// unwrap for the notification stream dropped alongside — graceful
+/// teardown must go through `close`, which sequences these.
 struct DisconnectGuard {
     peripheral: Peripheral,
     initiated: bool,
@@ -261,17 +263,23 @@ impl Transport for BtleplugTransport {
             notifications,
             ..
         } = self;
-        // End the notification stream while its connection is still
-        // fully up; tearing them down together can panic inside
-        // bluez-async's RemoveMatch handling.
-        drop(notifications);
         let peripheral = guard.peripheral.clone();
         let initiated = guard.initiated;
         guard.initiated = false;
         drop(guard);
+        // Disconnect while the notification stream is still alive. The
+        // disconnect emits PropertiesChanged signals for this device;
+        // if one arrives after the stream's receiver is gone but
+        // before its deferred RemoveMatch runs, dbus removes the match
+        // early and bluez-async's RemoveMatch task panics on unwrap
+        // ("No match with that id found").
         if initiated {
             peripheral.disconnect().await?;
         }
+        drop(notifications);
+        // Start the RemoveMatch task the drop above spawned while the
+        // device is quiet.
+        tokio::task::yield_now().await;
         Ok(())
     }
 }
