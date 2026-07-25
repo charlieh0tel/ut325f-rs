@@ -134,7 +134,7 @@ impl BtleplugTransport {
 
     /// Ends the subscription and the notification stream without
     /// touching the connection, and disarms the drop guard. Returns
-    /// the peripheral.
+    /// the peripheral and the unsubscribe outcome.
     ///
     /// Ordering matters: the meter notifies at ~3 Hz, and a signal
     /// landing between the stream's drop and its deferred RemoveMatch
@@ -146,25 +146,29 @@ impl BtleplugTransport {
     /// The guard stays armed across the awaits so that a cancelled
     /// teardown degrades to drop semantics (best-effort disconnect of
     /// an initiated connection) instead of leaking it.
-    async fn end_notifications(self) -> Peripheral {
+    async fn end_notifications(self) -> (Peripheral, Result<()>) {
         let Self {
             _peripheral: mut guard,
             notifications,
             data_out_uuid,
         } = self;
-        if let Some(characteristic) = guard
+        let unsubscribed = match guard
             .characteristics()
             .into_iter()
             .find(|c| c.uuid == data_out_uuid)
         {
-            let _ = guard.unsubscribe(&characteristic).await;
-        }
+            Some(characteristic) => guard
+                .unsubscribe(&characteristic)
+                .await
+                .map_err(Error::Btleplug),
+            None => Ok(()),
+        };
         drop(notifications);
         tokio::task::yield_now().await;
         let peripheral = guard.peripheral.clone();
         guard.initiated = false;
         drop(guard);
-        peripheral
+        (peripheral, unsubscribed)
     }
 
     /// Scans for `timeout` and returns the UT325F meters known to the
@@ -316,7 +320,9 @@ impl Transport for BtleplugTransport {
     }
 
     async fn close(self) -> Result<()> {
-        let peripheral = self.end_notifications().await;
+        // The unsubscribe outcome is irrelevant here: the disconnect
+        // below supersedes it by ending the session either way.
+        let (peripheral, _unsubscribed) = self.end_notifications().await;
         // A device that vanished mid-session (or errors on the probe)
         // is already disconnected: the goal state holds, so only a
         // device that remains connected after a failed disconnect is a
@@ -331,8 +337,13 @@ impl Transport for BtleplugTransport {
     }
 
     async fn detach(self) -> Result<()> {
-        self.end_notifications().await;
-        Ok(())
+        // Unlike close, detach has no disconnect to supersede a failed
+        // unsubscribe: the meter would keep notifying into a dropped
+        // stream (re-opening the RemoveMatch race) and the stale
+        // session may break the next subscribe. Report it so the
+        // caller can fall back to close().
+        let (_peripheral, unsubscribed) = self.end_notifications().await;
+        unsubscribed
     }
 }
 

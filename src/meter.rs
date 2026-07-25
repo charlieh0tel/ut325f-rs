@@ -49,6 +49,11 @@ impl<T: Transport> Meter<T> {
     /// Ends the notification stream cleanly, like
     /// [`close`](Self::close), but never disconnects — not even a
     /// connection this transport initiated.
+    ///
+    /// An error means the notification session could not be ended
+    /// cleanly (the meter may keep notifying into the void and the
+    /// next open may fail to subscribe). The connection is still up;
+    /// to recover, reopen the meter by address and `close` it.
     pub async fn detach(self) -> Result<()> {
         self.transport.detach().await
     }
