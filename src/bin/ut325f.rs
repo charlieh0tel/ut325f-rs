@@ -31,6 +31,7 @@ struct Args {
         long,
         value_name = "ADDRESS",
         num_args = 0..=1,
+        value_parser = parse_ble_address,
         conflicts_with = "discover"
     )]
     ble: Option<Option<String>>,
@@ -54,6 +55,26 @@ struct Args {
     /// Print the held temperatures as well.
     #[arg(short = 'H', long)]
     held_temps: bool,
+}
+
+/// Validates --ble's optional value. Without this, `--ble` greedily
+/// consumes any following token — e.g. a serial port path — as its
+/// address, bypassing the port/BLE conflict check.
+fn parse_ble_address(s: &str) -> std::result::Result<String, String> {
+    let bytes = s.as_bytes();
+    let valid = bytes.len() == 17
+        && bytes.chunks(3).all(|chunk| {
+            chunk[0].is_ascii_hexdigit()
+                && chunk[1].is_ascii_hexdigit()
+                && (chunk.len() == 2 || chunk[2] == b':')
+        });
+    if valid {
+        Ok(s.to_owned())
+    } else {
+        Err(format!(
+            "'{s}' is not a Bluetooth address (expected XX:XX:XX:XX:XX:XX)"
+        ))
+    }
 }
 
 async fn run<T: Transport>(mut meter: Meter<T>, held_temps: bool, disconnect: bool) -> Result<()> {

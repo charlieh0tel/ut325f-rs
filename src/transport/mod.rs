@@ -44,7 +44,7 @@ pub struct DiscoveredMeter {
 
 /// Sorts strongest signal first (unseen devices last), keeping only the
 /// strongest observation of each address (a meter can be seen by more
-/// than one adapter).
+/// than one adapter) and merging `connected` across its observations.
 #[cfg(any(feature = "bluebus", feature = "btleplug"))]
 fn finalize_discovered(mut meters: Vec<DiscoveredMeter>) -> Vec<DiscoveredMeter> {
     meters.sort_by(|a, b| {
@@ -53,7 +53,13 @@ fn finalize_discovered(mut meters: Vec<DiscoveredMeter>) -> Vec<DiscoveredMeter>
             .cmp(&b.address.to_ascii_uppercase())
             .then(b.rssi.unwrap_or(i16::MIN).cmp(&a.rssi.unwrap_or(i16::MIN)))
     });
-    meters.dedup_by(|a, b| a.address.eq_ignore_ascii_case(&b.address));
+    meters.dedup_by(|a, b| {
+        if !a.address.eq_ignore_ascii_case(&b.address) {
+            return false;
+        }
+        b.connected |= a.connected;
+        true
+    });
     meters.sort_by_key(|m| std::cmp::Reverse(m.rssi.unwrap_or(i16::MIN)));
     meters
 }
@@ -69,6 +75,18 @@ mod tests {
             rssi,
             connected: false,
         }
+    }
+
+    #[test]
+    fn test_finalize_merges_connected() {
+        // A meter connected via one adapter (no RSSI) and scanned via
+        // another must survive as connected with the scanned RSSI.
+        let mut connected = meter("AA:00:00:00:00:01", None);
+        connected.connected = true;
+        let meters = finalize_discovered(vec![meter("AA:00:00:00:00:01", Some(-40)), connected]);
+        assert_eq!(meters.len(), 1);
+        assert_eq!(meters[0].rssi, Some(-40));
+        assert!(meters[0].connected);
     }
 
     #[test]

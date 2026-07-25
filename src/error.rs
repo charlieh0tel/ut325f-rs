@@ -31,7 +31,7 @@ pub enum Error {
     },
 
     #[cfg(any(feature = "bluebus", feature = "btleplug"))]
-    #[error("timeout connecting to {0}")]
+    #[error("timeout opening {0} (connect, service discovery, or subscription)")]
     ConnectTimeout(String),
 
     #[cfg(any(feature = "bluebus", feature = "btleplug"))]

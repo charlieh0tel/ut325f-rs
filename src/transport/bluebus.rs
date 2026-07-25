@@ -63,19 +63,23 @@ impl BluebusTransport {
             .path(device_path.clone())?
             .build()
             .await?;
-        // The guard covers cancellation for the rest of open (e.g. the
-        // open timeout firing) and then rides in the transport; on drop
-        // it only disconnects a connection this call established.
+        // The guard covers cancellation from here on (e.g. the open
+        // timeout firing) and then rides in the transport; on drop it
+        // only disconnects a connection this call established. It is
+        // armed before connect so that a cancellation landing while
+        // the call is in flight — after BlueZ established the link but
+        // before the reply — still cleans up; if connect fails outright
+        // the guard's disconnect is a harmless no-op.
         let mut device_guard = DisconnectGuard {
             device: device.clone(),
             initiated: false,
         };
         if !device.connected().await? {
+            device_guard.initiated = true;
             device.connect().await.map_err(|e| Error::ConnectFailed {
                 address: address.to_owned(),
                 source: Box::new(e),
             })?;
-            device_guard.initiated = true;
         }
         wait_services_resolved(&device).await?;
 
@@ -244,17 +248,21 @@ impl BluebusTransport {
     /// connection, which drops the session and match rules server-side)
     /// without touching the device connection, and disarms the drop
     /// guard. Returns the device proxy.
+    ///
+    /// The guard stays armed across the await so that a cancelled
+    /// teardown degrades to drop semantics (best-effort disconnect of
+    /// an initiated connection) instead of leaking it.
     async fn end_notifications(self) -> ::bluebus::DeviceProxy<'static> {
         let Self {
             signals,
             _notify_connection: notify_connection,
             _device: mut guard,
         } = self;
+        drop(signals);
+        notify_connection.graceful_shutdown().await;
         let device = guard.device.clone();
         guard.initiated = false;
         drop(guard);
-        drop(signals);
-        notify_connection.graceful_shutdown().await;
         device
     }
 }
@@ -279,8 +287,15 @@ impl Transport for BluebusTransport {
 
     async fn close(self) -> Result<()> {
         let device = self.end_notifications().await;
-        if device.connected().await? {
-            device.disconnect().await?;
+        // A device that vanished mid-session (or errors on the probe)
+        // is already disconnected: the goal state holds, so only a
+        // device that remains connected after a failed disconnect is a
+        // real teardown failure.
+        if device.connected().await.unwrap_or(false)
+            && let Err(e) = device.disconnect().await
+            && device.connected().await.unwrap_or(false)
+        {
+            return Err(e.into());
         }
         Ok(())
     }
@@ -317,11 +332,15 @@ impl Drop for DisconnectGuard {
     }
 }
 
+/// Finds the device with `address`, preferring a connected instance
+/// when more than one adapter knows it (a stale cache entry on one
+/// adapter must not shadow a live connection on another).
 async fn find_device(
     object_manager: &::bluebus::ObjectManagerProxy<'_>,
     address: &str,
 ) -> Result<Option<OwnedObjectPath>> {
     let objects = object_manager.get_managed_objects().await?;
+    let mut fallback = None;
     for (path, interfaces) in &objects {
         let Some(properties) = interfaces.get(DEVICE_IFACE) else {
             continue;
@@ -330,11 +349,21 @@ async fn find_device(
         else {
             continue;
         };
-        if device_address.eq_ignore_ascii_case(address) {
+        if !device_address.eq_ignore_ascii_case(address) {
+            continue;
+        }
+        let connected = properties
+            .get("Connected")
+            .and_then(|v| v.downcast_ref::<bool>().ok())
+            .unwrap_or(false);
+        if connected {
             return Ok(Some(path.clone()));
         }
+        if fallback.is_none() {
+            fallback = Some(path.clone());
+        }
     }
-    Ok(None)
+    Ok(fallback)
 }
 
 async fn find_characteristic(

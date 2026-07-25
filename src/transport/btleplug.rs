@@ -42,7 +42,9 @@ impl BtleplugTransport {
             .map_err(|_| Error::InvalidAddress(address.to_owned()))?;
 
         // Search every adapter, tolerating per-adapter enumeration
-        // failures as long as the target is found somewhere.
+        // failures as long as the target is found somewhere. Prefer a
+        // connected instance: a stale cache entry on one adapter must
+        // not shadow a live connection on another.
         let mut peripheral = None;
         let mut enumeration_error = None;
         'adapters: for adapter in &all_adapters().await? {
@@ -54,9 +56,15 @@ impl BtleplugTransport {
                 }
             };
             for candidate in candidates {
-                if candidate.address() == target {
+                if candidate.address() != target {
+                    continue;
+                }
+                if candidate.is_connected().await.unwrap_or(false) {
                     peripheral = Some(candidate);
                     break 'adapters;
+                }
+                if peripheral.is_none() {
+                    peripheral = Some(candidate);
                 }
             }
         }
@@ -68,14 +76,19 @@ impl BtleplugTransport {
             None => Error::DeviceNotKnown(address.to_owned()),
         })?;
 
-        // The guard covers cancellation for the rest of open (e.g. the
-        // open timeout firing) and then rides in the transport; it only
-        // disconnects a connection this call established.
+        // The guard covers cancellation from here on (e.g. the open
+        // timeout firing) and then rides in the transport; on drop it
+        // only disconnects a connection this call established. It is
+        // armed before connect so that a cancellation landing while
+        // the call is in flight — after the stack established the link
+        // but before the reply — still cleans up; if connect fails
+        // outright the guard's disconnect is a harmless no-op.
         let mut peripheral = DisconnectGuard {
             peripheral,
             initiated: false,
         };
         if !peripheral.is_connected().await? {
+            peripheral.initiated = true;
             peripheral
                 .connect()
                 .await
@@ -83,7 +96,6 @@ impl BtleplugTransport {
                     address: address.to_owned(),
                     source: Box::new(e),
                 })?;
-            peripheral.initiated = true;
         }
         peripheral.discover_services().await?;
 
@@ -97,10 +109,13 @@ impl BtleplugTransport {
                 address: address.to_owned(),
             })?;
 
-        // Take the notification stream before subscribing so no frames
-        // are missed.
-        let notifications = peripheral.notifications().await?;
+        // Subscribe before taking the stream: at ~3 Hz this costs at
+        // most one frame at startup, and a cancellation landing during
+        // subscribe then has no live stream whose raw drop would race
+        // bluez-async's deferred RemoveMatch (an upstream unwrap that
+        // panics when a matching signal lands first).
         peripheral.subscribe(&characteristic).await?;
+        let notifications = peripheral.notifications().await?;
 
         Ok(Self {
             _peripheral: peripheral,
@@ -128,24 +143,27 @@ impl BtleplugTransport {
     /// found"). Unsubscribe quiets the device while the stream is
     /// alive; the yield lets RemoveMatch claim its match before
     /// anything (e.g. close's disconnect) emits new signals.
+    /// The guard stays armed across the awaits so that a cancelled
+    /// teardown degrades to drop semantics (best-effort disconnect of
+    /// an initiated connection) instead of leaking it.
     async fn end_notifications(self) -> Peripheral {
         let Self {
             _peripheral: mut guard,
             notifications,
             data_out_uuid,
         } = self;
-        let peripheral = guard.peripheral.clone();
-        guard.initiated = false;
-        drop(guard);
-        if let Some(characteristic) = peripheral
+        if let Some(characteristic) = guard
             .characteristics()
             .into_iter()
             .find(|c| c.uuid == data_out_uuid)
         {
-            let _ = peripheral.unsubscribe(&characteristic).await;
+            let _ = guard.unsubscribe(&characteristic).await;
         }
         drop(notifications);
         tokio::task::yield_now().await;
+        let peripheral = guard.peripheral.clone();
+        guard.initiated = false;
+        drop(guard);
         peripheral
     }
 
@@ -164,11 +182,19 @@ impl BtleplugTransport {
         let mut guard = ScanGuard {
             adapters: Vec::new(),
         };
+        // Each adapter enters the guard before start_scan so that a
+        // cancellation landing mid-call still stops a scan the daemon
+        // already started; stopping a scan that never started is
+        // harmless.
         let mut last_error = None;
         for adapter in &adapters {
+            guard.adapters.push(adapter.clone());
             match adapter.start_scan(ScanFilter::default()).await {
-                Ok(()) => guard.adapters.push(adapter.clone()),
-                Err(e) => last_error = Some(e),
+                Ok(()) => {}
+                Err(e) => {
+                    guard.adapters.pop();
+                    last_error = Some(e);
+                }
             }
         }
         if guard.adapters.is_empty() {
@@ -291,8 +317,15 @@ impl Transport for BtleplugTransport {
 
     async fn close(self) -> Result<()> {
         let peripheral = self.end_notifications().await;
-        if peripheral.is_connected().await? {
-            peripheral.disconnect().await?;
+        // A device that vanished mid-session (or errors on the probe)
+        // is already disconnected: the goal state holds, so only a
+        // device that remains connected after a failed disconnect is a
+        // real teardown failure.
+        if peripheral.is_connected().await.unwrap_or(false)
+            && let Err(e) = peripheral.disconnect().await
+            && peripheral.is_connected().await.unwrap_or(false)
+        {
+            return Err(e.into());
         }
         Ok(())
     }
