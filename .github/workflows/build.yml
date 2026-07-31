@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build-release:
-    uses: charlieh0tel/deb-workflows/.github/workflows/rust-build-exes.yml@main
+    uses: charlieh0tel/deb-workflows/.github/workflows/rust-build-exes.yml@v1
     secrets: inherit
     with:
       features: btleplug
