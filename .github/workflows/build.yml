@@ -18,3 +18,33 @@ jobs:
     with:
       features: btleplug
       build-deps: libdbus-1-dev
+
+  # Publishes to crates.io with Trusted Publishing: crates.io is configured to
+  # trust this repository and this workflow file, and mints a token good for
+  # about half an hour in exchange for the run's OIDC claim. No registry token
+  # is stored here, so there is nothing to leak or rotate, and a publish can
+  # only come from a tag push on this repository.
+  #
+  # Runs after the build, so the shared workflow's audit gate applies: a tag
+  # whose dependencies carry an advisory never reaches crates.io.
+  publish-crate:
+    needs: build-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The OIDC claim crates.io checks.
+      id-token: write
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      with:
+        toolchain: stable
+    # cargo publish builds the crate to verify the tarball. Default features
+    # are `serial` alone, which needs nothing from apt; btleplug and bluebus
+    # are opt-in and not exercised here.
+    - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18  # v1.0.5
+      id: auth
+    - run: cargo publish
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
