@@ -8,13 +8,13 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build-release:
     uses: charlieh0tel/deb-workflows/.github/workflows/rust-build-exes.yml@v1
-    secrets: inherit
+    # Scoped to this job rather than the whole workflow, and granted here
+    # because the shared workflow's release job needs it on a v* tag.
+    permissions:
+      contents: write
     with:
       features: btleplug
       build-deps: libdbus-1-dev
