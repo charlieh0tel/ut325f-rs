@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  rust-ci:
+    uses: charlieh0tel/deb-workflows/.github/workflows/rust-ci.yml@v1
+    with:
+      # so clippy sees every target
+      check-args: "--all-targets"
+      # Stable rustfmt, not the default nightly: no rustfmt.toml here, so the
+      # check should agree with the `cargo fmt` a contributor runs.
+      fmt-toolchain: ""

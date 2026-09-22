@@ -1,0 +1,13 @@
+version: 2
+
+updates:
+# Every `uses:` here is pinned to a full commit SHA with the tag it came from
+# in a trailing comment. Dependabot bumps both together, so the comment stays
+# truthful -- without something moving them, pinned actions just go stale.
+- package-ecosystem: github-actions
+  directory: /
+  schedule:
+    interval: weekly
+  groups:
+    actions:
+      patterns: ["*"]
