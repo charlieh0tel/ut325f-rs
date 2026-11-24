@@ -1,0 +1,30 @@
+# Dependabot's github-actions PRs are a SHA and a version comment each;
+# once the required checks pass there is nothing left to review.  This
+# turns on auto-merge for them, so the ruleset's checks decide.
+#
+# Left for a human: a new major of any action, which can change inputs
+# that only a release or a tag exercises, and every other ecosystem --
+# the security updates to the lockfiles.
+name: dependabot-automerge
+
+on: pull_request
+
+permissions: {}
+
+jobs:
+  automerge:
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      startsWith(github.head_ref, 'dependabot/github_actions/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ github.token }}
